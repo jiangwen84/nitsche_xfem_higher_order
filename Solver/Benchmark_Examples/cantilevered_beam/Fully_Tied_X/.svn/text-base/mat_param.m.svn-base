@@ -1,0 +1,4 @@
+%%%%%%%%% Material parameters for the positive and negative subdomains %%%%
+E = [1 1]; nu = zeros(2,1);
+
+yieldParam = [1 1 1e16; 1 2 1e16; 2 2 1e16];

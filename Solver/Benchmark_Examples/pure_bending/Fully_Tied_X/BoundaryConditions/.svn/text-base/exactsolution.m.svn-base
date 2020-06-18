@@ -1,0 +1,16 @@
+function [uex,nabUex] = exactsolution(x,y,domain,PARAMS)
+
+mat_param;
+Xmax = PARAMS.Xmax; Xmin = PARAMS.Xmin; xint = PARAMS.xint;
+%%%%%%%%% Analytical solutions %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+c2_1 = 1/(Xmax-Xmin); c1_1 = -Xmin/(Xmax-Xmin);
+c2_2 = E(1)/E(2)*c2_1;
+c1_2 = c1_1+(1-E(1)/E(2))*c2_1*(xint*(Xmax-Xmin)+Xmin);
+
+if(domain==1)
+    uex = [c1_1 + c2_1*x;0.0*y];
+    nabUex = [c2_1;0;0];
+elseif(domain==2)
+    uex = [c1_2 + c2_2*x;0.0*y];
+    nabUex = [c2_2;0;0];
+end

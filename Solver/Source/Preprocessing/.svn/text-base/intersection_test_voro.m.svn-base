@@ -1,0 +1,74 @@
+function [locGrain] = intersection_test_voro(nodeToGrain,VOR_VERT,VOR_SEG,x,y,node,e)
+
+nlink=3;
+xe = x(node(1:nlink,e));
+ye = y(node(1:nlink,e));
+locGrain = zeros(10,1);
+locGcount = 0;
+
+vertInsideElm = find(1==inpolygon([VOR_VERT.X],[VOR_VERT.Y],xe,ye));
+if(~isempty(vertInsideElm))
+    for iv=1:length(vertInsideElm)
+        fprintf('Voronoi vertex %d lies inside element %d\n',VOR_VERT(vertInsideElm(iv)).Id,e);
+        for ig=1:length(VOR_VERT(vertInsideElm(iv)).grns)
+            if(isempty(find(VOR_VERT(vertInsideElm(iv)).grns(ig)==locGrain,1)))
+                locGcount = locGcount+1;
+                locGrain(locGcount) = VOR_VERT(vertInsideElm(iv)).grns(ig);
+            end
+        end
+    end
+    locGrain(locGcount+1:end) = [];
+    locGrain = union(locGrain,nodeToGrain(node(1:3,e)),'rows');
+else
+    for in=1:nlink
+        isLocGrain = find(nodeToGrain(node(in,e),1)==locGrain,1);
+        if (isempty(isLocGrain))
+            locGcount = locGcount+1;
+            locGrain(locGcount) = nodeToGrain(node(in,e),1);
+        end
+    end
+    locGrain(locGcount+1:end) = [];
+    if(locGcount>=2)
+        %% Check for degenerate case
+        try
+            vorSeg = reshape([VOR_SEG.grns],2,length(VOR_SEG))';
+        catch err
+            fprintf('Crashing for element %d\n',e);
+            throw(err);
+        end
+        locGrain = sort(locGrain);
+        for ii=2:length(locGrain)
+            for kk=1:ii-1
+                segWithMin = union(find(locGrain(kk)==vorSeg(:,1)),find(locGrain(kk)==vorSeg(:,2)),'rows');
+                segWithMax = union(find(locGrain(ii)==vorSeg(:,1)),find(locGrain(ii)==vorSeg(:,2)),'rows');
+                commonSeg = intersect(segWithMin,segWithMax,'rows');
+                if(isempty(commonSeg))
+                    [locGrain] = findMissingGrain(locGrain,VOR_SEG,segWithMin,segWithMax,vorSeg,xe,ye);
+                else
+                    [Xint,~] = intersections([xe(1) xe(2) xe(3) xe(1)],[ye(1) ye(2) ye(3) ye(1)],...
+                        VOR_SEG(commonSeg).epXY(:,1),VOR_SEG(commonSeg).epXY(:,2));
+                    if(isempty(Xint))
+                        [locGrain] = findMissingGrain(locGrain,VOR_SEG,segWithMin,segWithMax,vorSeg,xe,ye);
+                    end
+                end
+            end
+        end
+    end
+    locGrain = sort(locGrain);
+end
+end
+
+function [locGrain] = findMissingGrain(locGrain,VOR_SEG,segWithMin,segWithMax,vorSeg,xe,ye)
+grnLinkedToMin = setdiff([VOR_SEG(segWithMin).grns]',locGrain(1)*ones(1,length(VOR_SEG(segWithMin)))','rows');
+grnLinkedToMax = setdiff([VOR_SEG(segWithMax).grns]',locGrain(2)*ones(1,length(VOR_SEG(segWithMax)))','rows');
+missingGrn = intersect(grnLinkedToMin,grnLinkedToMax,'rows');
+for iMissGrn=1:length(missingGrn)
+    segWithMissGrn = union(find(missingGrn(iMissGrn)==vorSeg(:,1)),find(missingGrn(iMissGrn)==vorSeg(:,2)),'rows');
+    segMissMin = intersect(segWithMin,segWithMissGrn,'rows');
+    [Xint2,~] = intersections([xe(1) xe(2) xe(3) xe(1)],[ye(1) ye(2) ye(3) ye(1)],...
+        VOR_SEG(segMissMin).epXY(:,1),VOR_SEG(segMissMin).epXY(:,2));
+    if(~isempty(Xint2))
+        locGrain = union(locGrain, missingGrn(iMissGrn),'rows');
+    end
+end
+end

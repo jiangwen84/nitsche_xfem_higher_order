@@ -1,0 +1,167 @@
+function [ke_diag,ke_offdiag,fCoh,elem] = nitsche_terms_newton(elem,siblings,B,NODE,VERT,PARAMS,u)
+
+% mat_param;
+
+ndof =  PARAMS.ndof;
+nlink = PARAMS.nlink;
+
+if(ndof~=2)
+    err = MException('DofChk:NotVector',...
+                'No tangential direction in scalar problem');
+    throw(err);
+end
+xe = [NODE(elem.nodes).X];
+ye = [NODE(elem.nodes).Y];
+Amat = [ 1 1 1; xe(1) xe(2) xe(3); ye(1) ye(2) ye(3)];
+
+% Gauss quadrature points
+gauss = [-3^(-0.5), 3^(-0.5)];
+
+fCoh = zeros(nlink*ndof,1);
+ke_diag = zeros(nlink*ndof,nlink*ndof);
+ke_offdiag = zeros(nlink*ndof,nlink*ndof,2);
+
+for iSib=1:length(siblings)
+    xint = [VERT(elem.vertices(iSib,1:2)).X];
+    yint = [VERT(elem.vertices(iSib,1:2)).Y];
+    
+    [uElm] = get_local_solution(elem,PARAMS,u);
+    [uSib] = get_local_solution(siblings(iSib),PARAMS,u);
+
+    %%%% Transformation matrix from (x,y) to (n,tau)    
+    P = [elem.normals(iSib,1)  elem.normals(iSib,2);
+        elem.normals(iSib,2) -elem.normals(iSib,1)];
+    
+    %%% Get the Jacobian
+    jcob_sub = 0.5*sqrt((xint(2)-xint(1))^2 + (yint(2)-yint(1))^2);
+    
+    kepen = zeros(nlink*ndof,nlink*ndof);
+    kenit_elm = zeros(nlink*ndof,nlink*ndof);
+    kenit_sib = zeros(nlink*ndof,nlink*ndof);
+    
+     %%%% Get element and sibling elastic tensor
+    DmatElm = get_elas_tensor(elem,PARAMS); DmatSib = get_elas_tensor(siblings,PARAMS);
+    %%%%% Modify normal vector to account for Voigt notation of stress tensor
+    normal_voigt_Elm = [elem.normals(1),0,elem.normals(2);
+                        0,elem.normals(2),elem.normals(1)];
+    normal_voigt_Sib = [siblings.normals(1),0,siblings.normals(2);
+                        0,siblings.normals(2),siblings.normals(1)];
+    %%%%%% Nitsche specific dNdotn terms
+    gradXY_elm = elem.gamma*normal_voigt_Elm*DmatElm*B;
+    gradXY_sib = siblings.gamma*normal_voigt_Sib*DmatSib*B;
+    
+    gradNT_elm = P*gradXY_elm;
+    gradNT_sib = P*gradXY_sib;
+    if(~PARAMS.nit_n), gradNT_elm(1,:) = zeros(1,nlink*ndof); gradNT_sib(1,:) = zeros(1,nlink*ndof); end
+    if(~PARAMS.nit_t), gradNT_elm(2,:) = zeros(1,nlink*ndof); gradNT_sib(2,:) = zeros(1,nlink*ndof); end
+    %%%%%% Average traction at the interface
+    NitTracXY = gradXY_elm*uElm - gradXY_sib*uSib;
+    NitTracNT = P*NitTracXY;
+    
+    for gp=1:2
+        eta = gauss(gp);
+        
+        %%% Get the parent shape functions
+        N1_sub = 0.5*(1-eta); N2_sub = 0.5*(1+eta);
+        xpos = N1_sub*xint(1) + N2_sub*xint(2);
+        ypos = N1_sub*yint(1) + N2_sub*yint(2);
+        Npar = Amat\[1 xpos ypos]';
+        
+        %%% Get the parent shape function on the embedded interface
+        if(ndof==2)
+            NparGamma = [Npar(1),0,Npar(2),0,Npar(3),0;
+                0,Npar(1),0,Npar(2),0,Npar(3)];
+        end
+        
+        %%%% Get jump in displacement at the quadrature point
+        uJump = NparGamma*(uElm-uSib);
+        %%% Get the tractions
+        [tracXY,gradXY_elm,gradXY_sib,alpha_e,elem,phiTrial] = get_traction_newton(elem,...
+            P,PARAMS,uJump,iSib,gp,NitTracNT,gradNT_elm,gradNT_sib);
+        
+        %%%%%%%%%%%%%%% DEBUGGING %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        if(PARAMS.debug || PARAMS.plotInt)
+            elem.tracInt(gp,:) = P*tracXY; elem.uJump(gp,:) = P*uJump;
+            elem.PhiTrial(gp) = phiTrial;
+        end
+        
+        %%%%%%%%%%%%%%%%%%%% Penalty Terms %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        fCoh = fCoh + jcob_sub*NparGamma'*tracXY;
+        kepen = kepen + jcob_sub*(NparGamma'*alpha_e*NparGamma);
+        
+        %%%%%%%%%%%%%%%%%%%% Nitsche Terms %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        kenit_elm = kenit_elm - jcob_sub*(NparGamma'*gradXY_elm);
+        kenit_sib = kenit_sib - jcob_sub*(NparGamma'*gradXY_sib);
+        
+        %fCoh = fCoh - jcob_sub*gradXY_elm'*u_jump; %%% Symmetry term contribution to cohesive force
+        
+    end
+    ke_offdiag(:,:,iSib) = -kepen - (kenit_sib);
+    ke_diag = ke_diag + kepen + (kenit_elm);
+    
+    %%% Symmetry terms contribution to tangent stiffness
+    %ke_offdiag(:,:,iSib) = -kepen - (kenit_sib + kenit_elm');
+    %ke_diag = ke_diag + kepen + (kenit_elm + kenit_elm');
+
+end
+
+end
+
+function [tracXY,gradXY_elm,gradXY_sib,alpha_e,elem,phiTrial] = get_traction_newton(elem,...
+    P,PARAMS,uJump,iSib,gp,NitTracNT,gradNT_elm,gradNT_sib)
+
+tracYield = elem.MatParam(3);
+nit_t = PARAMS.nit_t; nit_n = PARAMS.nit_n;
+ndof = PARAMS.ndof; nlink = PARAMS.nlink;
+if(ndof==2)    
+    %%%%%% Trial interfacial stiffness
+    if(nit_n), alpha_n = elem.stab(iSib); else alpha_n = PARAMS.pen_n; end
+    if(nit_t), alpha_t = elem.stab(iSib); else alpha_t = PARAMS.pen_t; end
+    %%%% alpha_(x,y) = P'*alpha_(n,tau)*P
+    alpha_e = P'*[alpha_n 0; 0 alpha_t]*P;
+    
+    %%%%%% Penalty contribution to traction at the interface
+    PenTracXY = alpha_e*(uJump-P'*elem.uJumpPl(gp,:,1)'); 
+    %%%%%% Transform to NT plane for tangential yielding calculations
+    PenTracNT = P*PenTracXY;     
+    %%%%% Compute trial traction
+    if(nit_n), tracNT_trial(1,1) = PenTracNT(1) - NitTracNT(1); else tracNT_trial(1,1) = PenTracNT(1); end
+    if(nit_t), tracNT_trial(2,1) = PenTracNT(2) - NitTracNT(2); else tracNT_trial(2,1) = PenTracNT(2); end
+    
+    %%%%% Trial yield surface
+    phiTrial = abs(tracNT_trial(2)) - tracYield;
+        
+    if(PARAMS.iIter==1)
+        if(phiTrial>PARAMS.tol)
+            fprintf('Possibly an error, plasticity detected during first iteration in Element %d and Gauss point %d\n', PARAMS.e, gp)
+            fprintf('\tPhiTrial = %6.8f\n',phiTrial)
+        end
+    end
+    
+    if(phiTrial<=PARAMS.tol)
+        %%%% Trial state is true state
+        tracNT = tracNT_trial; elem.uJumpPl(gp,2,2) = elem.uJumpPl(gp,2,1);
+    else
+        %%% Normal direction no yielding
+        tracNT(1,1) = tracNT_trial(1,1);
+        if(nit_n), alpha_n = elem.stab(iSib); else alpha_n = PARAMS.pen_n; end
+        %%%% Return mapping
+        if(nit_t)
+            delGam = phiTrial/(elem.stab(iSib));
+            tracNT(2,1) = tracNT_trial(2,1) - delGam*(elem.stab(iSib))*sign(tracNT_trial(2));
+        else
+            delGam = phiTrial/(PARAMS.pen_t);
+            tracNT(2,1) = tracNT_trial(2,1) - delGam*(PARAMS.pen_t)*sign(tracNT_trial(2));
+        end
+        elem.uJumpPl(gp,2,2) = elem.uJumpPl(gp,2,1) + delGam*sign(tracNT_trial(2));
+        alpha_t = 0; 
+        gradNT_elm(2,:) = zeros(1,nlink*ndof); gradNT_sib(2,:) = zeros(1,nlink*ndof);       
+    end
+    
+    %%%%% Transform back to XY plane for tangent stiffness
+    tracXY = P'*tracNT; gradXY_elm = P'*gradNT_elm; gradXY_sib = P'*gradNT_sib;
+    %%%% alpha_(x,y) = P'*alpha_(n,tau)*P
+    alpha_e = P'*[alpha_n 0; 0 alpha_t]*P;
+end
+end
+

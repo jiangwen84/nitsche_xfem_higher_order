@@ -1,0 +1,79 @@
+function [bigk,bigR,ELEM] = assemble_nitsche_newton(NODE,ELEM,VERT,PARAMS,u)
+
+num_bg_ele=PARAMS.num_bg_ele;
+ndof = PARAMS.ndof; nlink=PARAMS.nlink;
+% nit_t = PARAMS.nit_t;
+% nit_n = PARAMS.nit_n;
+
+elem_mat_size = (nlink*ndof)^2;
+num_dof = ndof*length(NODE);
+numele = length(ELEM);
+n_cut_ele = numele-num_bg_ele;
+fext = zeros(nlink*ndof,1); bigR = zeros(num_dof,1);
+% For a cut elem, we have 2 diag and 2 off-diag contributions to the stiffness, each of size elem_mat_size.
+alloc_size = 4*elem_mat_size*n_cut_ele + elem_mat_size*(num_bg_ele-n_cut_ele);
+I = zeros(alloc_size,1); J = zeros(alloc_size,1); V = zeros(alloc_size,1);
+next = 0;
+
+for e=1:numele
+    PARAMS.e = e;
+    
+    %%%%% Calculate B Matrix %%%%%%%%%%
+    [B] = sfderivatives(ELEM(e).nodes,NODE,ndof);
+    
+    Dmat = get_elas_tensor(ELEM(e),PARAMS);
+    
+    if(~isempty(ELEM(e).vertices))          %%%% Check if element is cut
+         %%%%%%%%%%%%% Get Nitsche and penalty terms for stiffness matrix %%
+        [keCoh_diag,keCoh_offdiag,fCoh,ELEM(e)] = nitsche_terms_newton(ELEM(e)...
+            ,ELEM(ELEM(e).siblings),B,NODE,VERT,PARAMS,u);
+    else
+        keCoh_diag = zeros(nlink*ndof,nlink*ndof); keCoh_offdiag = zeros(nlink*ndof,nlink*ndof);
+        fCoh = zeros(nlink*ndof,1);
+    end
+
+    %%%%%%% (Block) Diagonal terms of global stiffness %%%%%%%%%%%%%
+    %%%%%%% B matrix is a constant, therefore ke = B'*B*volume.
+    uElm = get_local_solution(ELEM(e),PARAMS,u);
+    keBulk = B'*Dmat*B*ELEM(e).volume; fintBulk = B'*(Dmat*B*uElm)*ELEM(e).volume;
+    fint = fintBulk + fCoh;
+    
+    ke = keBulk + keCoh_diag; ElmR = fext - fint;
+        
+    %%%%%%%%%% Assembly procedure %%%%%%%%%%%%%%
+    for inod=1:nlink
+        rg = (ndof*(ELEM(e).nodes(inod)-1) + 1);
+        re = ndof*(inod-1)+1;
+        %%%%%%% Assemble a row of the global stiffness %%%%%%%%%%%%
+        for jnod=1:nlink
+            %%%%%%% Get column indices for the block diagonal entries and
+            %%%%%%% row indices for both diagonal and off-diagonal entries
+            cbk_diag = ndof*(ELEM(e).nodes(jnod)-1) + 1;                       
+            ce = ndof*(jnod-1)+1;
+            for idof=1:ndof
+                for jdof=1:ndof
+                    I(next+1) = rg + (idof-1); J(next+1) = cbk_diag + (jdof-1);
+                    V(next+1) = ke(re+(idof-1),ce+(jdof-1));
+                    next = next+1;
+                end
+            end
+            %%%%%%% For uncut elements there is no off-diagonal assembly %%
+            if(~isempty(ELEM(e).siblings))
+                for iSib=1:length(ELEM(e).siblings)
+                    %%%%%%% Assemble cut elements %%%%%%%%%%%%%%%%
+                    cbk_offdiag = ndof*(ELEM(ELEM(e).siblings(iSib)).nodes(jnod)-1) + 1;
+                    for idof=1:ndof
+                        for jdof=1:ndof
+                            I(next+1) = rg + (idof-1); J(next+1) = cbk_offdiag + (jdof-1);
+                            V(next+1) = keCoh_offdiag(re+(idof-1),ce+(jdof-1),iSib);
+                            next = next+1;
+                        end
+                    end
+                end
+            end
+        end
+        %%%%%%%%% Assemble global residual vector %%%%%%%%%%%%
+        bigR(rg:(rg+ndof-1)) = bigR(rg:(rg+ndof-1)) + ElmR(re:(re+ndof-1));
+    end
+end
+bigk = sparse(I,J,V,num_dof,num_dof);

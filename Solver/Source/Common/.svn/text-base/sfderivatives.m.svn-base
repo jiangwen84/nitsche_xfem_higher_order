@@ -1,0 +1,29 @@
+function [B] = sfderivatives(loc_conn,NODE,ndof)
+
+%%%%%%%%% Nodal coordinates for the element %%%%%%%%%%
+xe = [NODE(loc_conn).X];
+ye = [NODE(loc_conn).Y];
+
+%%%%%% Define notations as in R.D.Cook, page 150 %%%%%%%%%
+y23 = ye(2)-ye(3);
+y31 = ye(3)-ye(1);
+y12 = ye(1)-ye(2);
+y21 = -y12;
+x32 = xe(3)-xe(2);
+x13 = xe(1)-xe(3);
+x31 = -x13;
+x21 = xe(2)-xe(1);
+y32 = -y23;
+
+twoA = (x21*y31 - x31*y21);
+
+%%%%%% B- matrix %%%%%%%%%%%
+if (ndof==2)
+    B = (1/twoA)*[-y32    0  y31    0 -y21    0;
+                     0  x32    0 -x31    0  x21;
+                   x32 -y32 -x31  y31  x21 -y21];
+else
+    B = (1/twoA)*[-y32  y31 -y21;
+                   x32 -x31  x21];
+end
+end

@@ -1,0 +1,106 @@
+function [ke_diag,ke_offdiag,fe_gam] = nitsche_terms(elem,siblings,B,NODE,VERT,PARAMS)
+
+% mat_param;
+
+ndof =  PARAMS.ndof;
+nlink = PARAMS.nlink;
+nit_n = PARAMS.nit_n; pen_n = PARAMS.pen_n;
+nit_t = PARAMS.nit_t; pen_t = PARAMS.pen_t;
+
+xe = [NODE(elem.nodes).X];
+ye = [NODE(elem.nodes).Y];
+Amat = [ 1 1 1; xe(1) xe(2) xe(3); ye(1) ye(2) ye(3)];
+
+% Gauss quadrature points
+gauss = [-3^(-0.5), 3^(-0.5)];
+
+% Get value of gamma for the weighted average
+gamma_elm = elem.gamma;
+gamma_sib = siblings.gamma;
+
+fe_gam = zeros(nlink*ndof,1);
+ke_diag = zeros(nlink*ndof,nlink*ndof);
+ke_offdiag = zeros(nlink*ndof,nlink*ndof,2);
+
+for iSib=1:length(siblings)
+    xint = [VERT(elem.vertices(iSib,1:2)).X];
+    yint = [VERT(elem.vertices(iSib,1:2)).Y];
+    
+    %%% Get the penalty or stabilization parameter(s)
+    if(ndof==2)
+        %%%% Transformation matrix from (x,y) to (n,tau)
+        %%%% alpha_(x,y) = P'*alpha_(n,tau)*P
+        P = [elem.normals(iSib,1)  elem.normals(iSib,2);
+            elem.normals(iSib,2) -elem.normals(iSib,1)];
+        if(nit_n), alpha_n = elem.stab(iSib); else alpha_n = pen_n; end
+        if(nit_t), alpha_t = elem.stab(iSib); else alpha_t = pen_t; end
+        alpha_e = P'*[alpha_n 0; 0 alpha_t]*P;
+    else
+        P = 1;
+        if(nit_n), alpha_e = elem.stab(iSib); else alpha_e = pen_n; end
+    end
+    
+    %%% Get the tractions
+    tracXY_elm = get_traction(elem,B,P,elem.normals(iSib,1:2),PARAMS);
+    tracXY_sib = get_traction(siblings(iSib),B,P,-elem.normals(iSib,1:2),PARAMS);
+    
+    %%% Get the Jacobian
+    jcob_sub = 0.5*sqrt((xint(2)-xint(1))^2 + (yint(2)-yint(1))^2);
+    
+    kepen = zeros(nlink*ndof,nlink*ndof);
+    kenit_elm = zeros(nlink*ndof,nlink*ndof);
+    kenit_sib = zeros(nlink*ndof,nlink*ndof);
+    
+    for gp=1:2
+        eta = gauss(gp);
+        
+        %%% Get the parent shape functions
+        N1_sub = 0.5*(1-eta); N2_sub = 0.5*(1+eta);
+        xpos = N1_sub*xint(1) + N2_sub*xint(2);
+        ypos = N1_sub*yint(1) + N2_sub*yint(2);
+        Npar = Amat\[1 xpos ypos]';
+        
+        %%% Get the parent shape function on the embedded interface
+        if(ndof==2)
+            NparGamma = [Npar(1),0,Npar(2),0,Npar(3),0;
+                0,Npar(1),0,Npar(2),0,Npar(3)];
+        else
+            NparGamma = Npar';
+        end
+        
+        % [u_jump] = get_jump_interface(xpos,ypos,[elem.normals]);
+        
+        %%%%%%%%%%%%%%%%%%%% Nitsche Terms %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        kenit_elm = kenit_elm - jcob_sub*(NparGamma'*tracXY_elm);
+        kenit_sib = kenit_sib - jcob_sub*(NparGamma'*tracXY_sib);
+        %         fe_gam = fe_gam + jcob_sub*u_jump*tracXY_elm';
+        
+        %%%%%%%%%%%%%%%%%%%% Penalty Terms %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        kepen = kepen + jcob_sub*(NparGamma'*alpha_e*NparGamma);
+        %         fe_gam = fe_gam + jcob_sub*NparGamma'*alpha_e*u_jump;
+    end
+    
+    ke_offdiag(:,:,iSib) = -kepen - (gamma_sib*kenit_sib + gamma_elm*kenit_elm');
+    ke_diag = ke_diag + kepen + gamma_elm*(kenit_elm + kenit_elm');
+end
+
+end
+
+function [tracXY] = get_traction(elem,B,P,normal,PARAMS)
+
+%mat_param;        %%%% Get material properties
+Dmat = get_elas_tensor(elem,PARAMS);
+if(PARAMS.ndof==1)
+    normal_voigt = normal;
+elseif(PARAMS.ndof==2)
+    %%%%%% Discretized stress tensor = normal_voigt*Dmat*B*d %%%%%%%
+    normal_voigt = [normal(1),0,normal(2);
+        0,normal(2),normal(1)];
+end
+tracNT = P*normal_voigt*Dmat*B;
+if(~PARAMS.nit_n), tracNT(1,:) = zeros(1,PARAMS.nlink*PARAMS.ndof); end
+if(~PARAMS.nit_t && PARAMS.ndof==2), tracNT(2,:) = zeros(1,PARAMS.nlink*PARAMS.ndof); end
+tracXY = P'*tracNT;
+
+end
+

@@ -1,0 +1,23 @@
+K 25
+svn:wc:ra_dav:version-url
+V 125
+/svn/repos/mh186repo/!svn/ver/23/trunk/Embedded_2D/Solver/Benchmark_Examples/Planar_Interface/Fully_Tied_X/BoundaryConditions
+END
+get_jump_interface.m
+K 25
+svn:wc:ra_dav:version-url
+V 145
+/svn/repos/mh186repo/!svn/ver/9/trunk/Embedded_2D/Solver/Benchmark_Examples/Planar_Interface/Fully_Tied_X/BoundaryConditions/get_jump_interface.m
+END
+essentialbcs.m
+K 25
+svn:wc:ra_dav:version-url
+V 140
+/svn/repos/mh186repo/!svn/ver/23/trunk/Embedded_2D/Solver/Benchmark_Examples/Planar_Interface/Fully_Tied_X/BoundaryConditions/essentialbcs.m
+END
+exactsolution.m
+K 25
+svn:wc:ra_dav:version-url
+V 141
+/svn/repos/mh186repo/!svn/ver/23/trunk/Embedded_2D/Solver/Benchmark_Examples/Planar_Interface/Fully_Tied_X/BoundaryConditions/exactsolution.m
+END

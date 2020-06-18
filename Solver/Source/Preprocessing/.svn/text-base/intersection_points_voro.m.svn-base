@@ -1,0 +1,74 @@
+function [xint,yint,nb_int,edge_id,intToGrn] = intersection_points_voro(node,x,y,VOR_SEG,locGrn,e)
+
+nlink = 3;
+nlset = 3;
+xe = x(node(1:nlink,e));
+ye = y(node(1:nlink,e));
+nb_int=0;
+intToGrn = cell(length(locGrn)+1,1);
+
+xint=zeros(length(locGrn),1); yint=zeros(length(locGrn),1); edge_id=zeros(length(locGrn),1);
+segCount = 1;
+%Loop over the number of segment
+for i=2:length(locGrn)
+    for k=1:i-1
+        [xint,yint,nb_int,edge_id,intToGrn] = get_intersection_points_segment(locGrn,intToGrn,...
+            nlset,VOR_SEG,xe,ye,xint,yint,nb_int,edge_id,k,i);
+        segCount=segCount+1;
+    end
+end
+% egde id check
+if(length(unique(edge_id))~=length(edge_id))
+    fprintf('In elem %d, one edge is cut more than once\n',e);
+end
+end
+
+function [xint,yint,nb_int,edge_id,intToGrn] = get_intersection_points_segment(locGrn,intToGrn,nlset,VOR_SEG,xe,ye,...
+    xint,yint,nb_int,edge_id,kk,ii)
+% find the segment
+vorSeg = reshape([VOR_SEG.grns],2,length(VOR_SEG))';
+segWithMin = find(locGrn(kk)==vorSeg(:,1));
+segWithMax = find(locGrn(ii)==vorSeg(:,2));
+seg=intersect(segWithMin,segWithMax,'rows');
+if(~isempty(seg))
+    % Loop over the edges to get the intersection points
+    for i=2:nlset
+        for k=1:i-1
+            [Xint,Yint] = intersections([xe(i) xe(k)],[ye(i) ye(k)],VOR_SEG(seg).epXY(:,1),VOR_SEG(seg).epXY(:,2));
+            if (~isempty(Xint))
+                nb_int=nb_int+1;
+                if(i==2)
+                    edge_id(nb_int)=21;
+                elseif(i==3 && k==1)
+                    edge_id(nb_int)=31;
+                elseif(i==3 && k==2)
+                    edge_id(nb_int)=32;
+                end
+                xint(nb_int)=Xint;
+                yint(nb_int)=Yint;
+                intToGrn{nb_int} = VOR_SEG(seg).grns;
+            end
+        end
+    end
+    % find the triple junction vertex (if any)
+    if(length(xint)<length(locGrn)+1)
+        [IN ON] = inpolygon(VOR_SEG(seg).epXY(:,1),VOR_SEG(seg).epXY(:,2),xe,ye);
+        inIsTrue=find(IN==1); onIsFalse=find(ON==0);
+        if(length(inIsTrue)==1 && length(onIsFalse)==2)
+            xint(end+1)=VOR_SEG(seg).epXY(inIsTrue,1);
+            yint(end+1)=VOR_SEG(seg).epXY(inIsTrue,2);
+            intToGrn{length(locGrn)+1} = locGrn';
+        elseif(length(inIsTrue)>1)
+            if(length(onIsFalse)==1)
+                xint(end+1)=VOR_SEG(seg).epXY(onIsFalse,1);
+                yint(end+1)=VOR_SEG(seg).epXY(onIsFalse,2);
+                intToGrn{length(locGrn)+1} = locGrn';
+            else
+                err = MException('segmentChk:edgeCutTwice','VOR_SEG %d is totally embedded in an elem',seg);
+                throw(err);
+            end
+        end
+    end
+end
+end
+

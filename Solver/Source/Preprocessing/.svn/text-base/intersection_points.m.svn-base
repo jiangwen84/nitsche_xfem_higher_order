@@ -1,0 +1,28 @@
+function [xint,yint,coeff,nb_int,edge_id] = intersection_points(node,x,y,ls,e)
+
+xe = x(node(1:3,e));
+ye = y(node(1:3,e));
+ones = [1;1;1];
+xmat = [ones,xe,ye];
+%determine which two sides have a change of sign in level-set
+%Calculation of intersection points of element edges with the level-set
+nb_int=0;
+lse = [ls(node(1,e));ls(node(2,e));ls(node(3,e))];
+coeff = xmat\lse;
+for i=2:3
+    for k=1:i-1
+        c=lse(i)*lse(k);
+        if (c<0)
+            nb_int=nb_int+1;
+            if(i==2)
+                edge_id(nb_int)=21;
+            elseif(i==3 && k==1)
+                edge_id(nb_int)=31;
+            elseif(i==3 && k==2)
+                edge_id(nb_int)=32;
+            end
+            xint(nb_int)=xe(k)-(xe(i)-xe(k))*lse(k)/(lse(i)-lse(k));
+            yint(nb_int)=ye(k)-(ye(i)-ye(k))*lse(k)/(lse(i)-lse(k));
+        end
+    end
+end

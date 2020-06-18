@@ -1,0 +1,296 @@
+function[ELEM,NODE,VERT,PARAMS] = comp_geo_ls(x,y,node,ls,PARAMS)
+
+fprintf('*************************************************************************** \n')
+fprintf('      Pre-processing: Computational geometry for enriched formulation       \n')
+
+numnod = size(x,1); numele = size(node,2);
+nlink = 3;
+nlset = 3;
+
+% Computational domain
+maxX=max(x); minX = min(x); lengthX=abs(maxX-minX);
+maxY=max(y); minY = min(y); lengthY=abs(maxY-minY);
+
+% For Nitsche's stabilization parameter
+yieldParam = [];
+mat_param;
+
+PARAMS.num_bg_nod = numnod;
+PARAMS.num_bg_ele = numele;
+PARAMS.sum_num_vv_e = 0;
+PARAMS.nlink = nlink;
+
+%% Initialize number of virtual nodes
+nb_virt_nod = 0;
+nodepartochild = zeros(numnod,1);
+
+%% Allocate memory in blocks
+block_size = floor(numele + 0.1*numele);
+alloc_size = block_size;
+valloc_size = block_size;
+
+%% Structure ELEM
+% ELEM(i).nodes:    modified connectivity of element i
+% ELEM(i).domain:   index of the domain to which element i belongs
+% ELEM(i).volume:   computational volume of element i
+% ELEM(i).siblings: other partial element(s) from the same parent
+% ELEM(i).normals:  normal(s) of embedded interface(s) if any
+% ELEM(i).vertices: list of global vertex indices in element i
+% ELEM(i).stab:     (list of) stabilization parameter for Nitsche's method
+% ELEM(i).localVV:  list of vital vertices whose support are defined over elem i
+% ELEM(i).activEP:  list of nodes of elem i which are active end-points
+% ELEM(i).gamma:    weight for the bracket operator computed as a weighted average
+% ELEM(i).boundX:   extremal value in x direction defining the outer boundaries of ELEM(i)
+% ELEM(i).boundY:   extremal value in Y direction defining the outer boundaries of ELEM(i)
+%                   rmk: if boundX and boundY are empty ELEM(i) doesn't
+%                   belong to the corresponding boundary
+% ELEM(i).uJumpPl:  Plastic jump at the interface for ELEM(i) at both gauss
+%                   points and both load steps
+% ELEM(i).MatParam: Young's modulus and Poisson's ratio for ELEM(i)
+if(~PARAMS.debug && ~PARAMS.plotInt)
+    ELEM(alloc_size) = struct('nodes', [], 'domain', [], 'volume', [], 'siblings', [],...
+        'normals', [], 'vertices', [], 'stab', [], 'localVV', [], 'activEP', [],...
+        'gamma', [], 'boundX', [], 'boundY', [], 'uJumpPl', [], 'MatParam', []);
+else
+    ELEM(alloc_size) = struct('nodes', [], 'domain', [], 'volume', [], 'siblings', [],...
+        'normals', [], 'vertices', [], 'stab', [], 'localVV', [], 'activEP', [],...
+        'gamma', [], 'boundX', [], 'boundY', [], 'uJumpPl', [], 'MatParam', [],...
+        'tracInt', [], 'uJump', [],'PhiTrial',[]);
+end
+%% Structure VERT
+% VERT(i).X:     x-coordinate of vertex i
+% VERT(i).Y:     y-coordinate of vertex i
+% VERT(i).vital: bool to indicate if vertex i is vital
+VERT(valloc_size) = struct('X', [], 'Y', [], 'vital', []);
+
+csize = 0;
+vsize = 0;
+cut_edge_conn = zeros(2,3*numele);
+n_cut_ele = 0;
+n_cut_edge = 0;
+
+for e=1:numele
+    
+    [int_flag] = intersection_test(ls,node,e);
+    if(int_flag==1)
+        n_cut_ele = n_cut_ele+1;
+        %%%%% Create a map between parent and child nodes
+        lse = ls(node(1:nlink,e));
+        for i=1:nlink
+            if(nodepartochild(node(i,e))==0)				%%%% check to identify if parent node is already associated with a child
+                nb_virt_nod = nb_virt_nod + 1;				%%%% if not, create a child
+                nodepartochild(node(i,e)) = numnod + nb_virt_nod;
+            end
+        end
+        
+        %%%%% Create element connectivity for cut elements
+        for i=1:nlink
+            if(lse(i)<0)
+                ELEM(csize+1).nodes(i) = node(i,e);			%%% if node belongs to Omega^-, retain it
+                ELEM(csize+2).nodes(i) = nodepartochild(node(i,e));	%%% and replace it with its child in the sibling
+            else
+                ELEM(csize+2).nodes(i) = node(i,e);			%%% if node belongs to Omega^+, retain it
+                ELEM(csize+1).nodes(i) = nodepartochild(node(i,e));	%%% and replace it with its child in the sibling
+            end
+        end
+        
+        %%%%% Test whether ELEM(csize+...) lies on the outer boundary:1
+        for i=2:nlset
+            for k=1:i-1
+                if(abs(x(node(i,e))-maxX)<1.0e-12*lengthX && abs(x(node(k,e))-maxX)<1.0e-12*lengthX)
+                    ELEM(csize+1).boundX = maxX;
+                    ELEM(csize+2).boundX = maxX;
+                elseif(abs(x(node(i,e))-minX)<1.0e-12*lengthX && abs(x(node(k,e))-minX)<1.0e-12*lengthX)
+                    ELEM(csize+1).boundX = minX;
+                    ELEM(csize+2).boundX = minX;
+                end
+                if(abs(y(node(i,e))-maxY)<1.0e-12*lengthY && abs(y(node(k,e))-maxY)<1.0e-12*lengthY)
+                    ELEM(csize+1).boundY = maxY;
+                    ELEM(csize+2).boundY(end+1) = maxY;
+                elseif(abs(y(node(i,e))-minY)<1.0e-12*lengthY && abs(y(node(k,e))-minY)<1.0e-12*lengthY)
+                    ELEM(csize+1).boundY = minY;
+                    ELEM(csize+2).boundY = minY;
+                end
+            end
+        end
+        
+        %%%%% Create relationship between siblings
+        ELEM(csize+1).siblings = csize+2;
+        ELEM(csize+2).siblings = csize+1;
+        
+        %%%%% Get vertices and normals
+        [xint,yint,coeff,nb_int,edge_id] = intersection_points(node,x,y,ls,e);
+        [VERT,ELEM,cut_edge_conn,vsize,n_cut_edge] = get_vertices(VERT,ELEM,e,vsize,csize,node,cut_edge_conn,edge_id,nb_int,xint,yint,n_cut_edge);
+        ELEM(csize+1).normals = -normal(coeff);
+        ELEM(csize+2).normals = normal(coeff);
+        
+        %%%%% Get computational volume for children and domain
+        [ELEM(csize+2).volume,ELEM(csize+1).volume] = sub_areas(node,e,x,y,ls,xint,yint);
+        ELEM(csize+1).domain = 1;
+        ELEM(csize+2).domain = 2;
+        
+        %%%% Store material parameters in struct ELEM
+        ELEM(csize+1).MatParam(1) = E(ELEM(csize+1).domain);
+        ELEM(csize+2).MatParam(1) = E(ELEM(csize+2).domain);
+        if(PARAMS.ndof==2)
+            ELEM(csize+1).MatParam(2) = nu(ELEM(csize+1).domain);
+            ELEM(csize+2).MatParam(2) = nu(ELEM(csize+2).domain);
+            domMax = max(ELEM(csize+1).domain,ELEM(csize+2).domain);
+            domMin = min(ELEM(csize+1).domain,ELEM(csize+2).domain);
+            yieldRow = find(yieldParam(:,1)==domMin & yieldParam(:,2)==domMax,1);
+            ELEM(csize+1).MatParam(3) = yieldParam(yieldRow,3);
+            ELEM(csize+2).MatParam(3) = yieldParam(yieldRow,3);
+        end
+        
+        %%%% Get stabilization parameter
+        length_e = sqrt((xint(2)-xint(1))^2 + (yint(2)-yint(1))^2);
+        DiagT = eye(3); DiagT(3,3) = 2; % Alex's trick
+        Dmat_1 = get_elas_tensor(ELEM(csize+1),PARAMS);
+        Dmat_2 = get_elas_tensor(ELEM(csize+2),PARAMS);
+        if(PARAMS.gamFlag==2)
+            %%%%%%%%% Robust Nitsche's formulation %%%%%%%%%%%%%%%%%%%%%%%%
+            wei_vol = norm(Dmat_2*DiagT)*ELEM(csize+1).volume + ...
+                norm(Dmat_1*DiagT)*ELEM(csize+2).volume;
+            ELEM(csize+1).gamma = ELEM(csize+1).volume*norm(Dmat_2*DiagT)/wei_vol;
+            ELEM(csize+2).gamma = ELEM(csize+2).volume*norm(Dmat_1*DiagT)/wei_vol;
+            D_avg = norm(Dmat_1*DiagT)*norm(Dmat_2*DiagT)/wei_vol;
+            ELEM(csize+1).stab = 2*length_e*D_avg;
+            ELEM(csize+2).stab = 2*length_e*D_avg;
+        elseif(PARAMS.gamFlag==1)
+            %%%%%%%%% Hansbo Nitsche's formulation %%%%%%%%%%%%%%%%%%%%%%%%
+            vol_ele = ELEM(csize+1).volume + ELEM(csize+2).volume;
+            ELEM(csize+1).gamma = ELEM(csize+1).volume/vol_ele;
+            ELEM(csize+2).gamma = ELEM(csize+2).volume/vol_ele;
+            D_avg = (norm(Dmat_2*DiagT)*ELEM(csize+2).volume...
+                + norm(Dmat_1*DiagT)*ELEM(csize+1).volume)/vol_ele^2;
+            ELEM(csize+1).stab = 2*length_e*D_avg;
+            ELEM(csize+2).stab = 2*length_e*D_avg;
+        else
+            %%%%%%%%% Classical Nitsche's formulation %%%%%%%%%%%%%%%%%%%%%
+            ELEM(csize+1).gamma = 0.5;
+            ELEM(csize+2).gamma = 0.5;
+            D_avg = norm(Dmat_2*DiagT)/ELEM(csize+2).volume + ...
+                norm(Dmat_1*DiagT)/ELEM(csize+1).volume;
+            ELEM(csize+1).stab = (2/4)*(length_e)*D_avg;
+            ELEM(csize+2).stab = (2/4)*(length_e)*D_avg;
+        end
+        
+        %%%%% Store internal variables in struct ELEM: uJumpPl(l,m,p)
+        %%%%% l--> Gauss points; m--> direction (n, tau); 
+        %%%%% p--> load steps (current and last converged)
+        if(PARAMS.newton)
+            ELEM(csize+1).uJumpPl = zeros(2,2,2);
+            ELEM(csize+2).uJumpPl = zeros(2,2,2);
+        end
+       
+        %%%%% Store interface quantities: ujump and traction in struct ELEM:
+        %%%%% uJump(l,m) & tracInt(l,m)
+        %%%%% l--> Gauss points; m--> direction (n, tau); 
+        if(PARAMS.debug || PARAMS.plotInt)
+            ELEM(csize+1).uJump = zeros(2,2);
+            ELEM(csize+2).uJump = zeros(2,2);
+            ELEM(csize+1).tracInt = zeros(2,2);
+            ELEM(csize+2).tracInt = zeros(2,2);
+        end
+                
+        csize = csize+2;
+    else
+        %%%%% Connectivity and computational volume for uncut elements
+        ELEM(csize+1).nodes = node(1:nlink,e)';
+        ELEM(csize+1).volume = polyarea(x(node(1:nlink,e)), y(node(1:nlink,e)));
+        set = find(ls(node(1:nlink,e))<0);
+        if (set>0)
+            ELEM(csize+1).domain = 1;
+        else
+            ELEM(csize+1).domain = 2;
+        end
+        
+        %%%% Store material parameters in struct ELEM
+        ELEM(csize+1).MatParam(1) = E(ELEM(csize+1).domain);
+        if(PARAMS.ndof==2)
+            ELEM(csize+1).MatParam(2) = nu(ELEM(csize+1).domain);
+        end
+        
+        csize = csize+1;
+    end
+    
+    %% Memory allocation for ELEM & VERT
+    if(csize + 0.1*alloc_size>alloc_size)
+        alloc_size = alloc_size + block_size;
+        if(~PARAMS.debug && ~PARAMS.plotInt)
+            ELEM(alloc_size) = struct('nodes', [], 'domain', [], 'volume', [],...
+                'siblings', [], 'normals', [], 'vertices', [], 'stab', [],...
+                'localVV', [], 'activEP', [], 'gamma', [], 'boundX', [], 'boundY', [],...
+                'uJumpPl', [], 'MatParam', []);
+        else
+            ELEM(alloc_size) = struct('nodes', [], 'domain', [], 'volume', [],...
+                'siblings', [], 'normals', [], 'vertices', [], 'stab', [],...
+                'localVV', [], 'activEP', [], 'gamma', [], 'boundX', [], 'boundY', [],...
+                'uJumpPl', [], 'MatParam', [], 'tracInt', [], 'uJump', [],'PhiTrial',[]);
+        end
+    end
+    if(vsize + 0.1*valloc_size>valloc_size)
+        valloc_size = valloc_size + block_size;
+        VERT(valloc_size) = struct('X', [], 'Y', [], 'vital', []);
+    end
+end
+cut_edge_conn(:,(n_cut_ele+2):end) = [];
+ELEM(csize+1:end) = [];
+VERT(vsize+1:end) = [];
+
+num_tot_nod = numnod + nb_virt_nod;
+%% Structure NODE
+% NODE(i).X:          x-coordinate of node i
+% NODE(i).Y:          y-coordinate of node i
+% NODE(i).domain:     index of the domain to which node i belongs
+% NODE(i).ls:         value of the level-set
+% NODE(i).childrenId: index of the chid(ren) of node i
+% NODE(i).endPt:      bool to indicate whether node i is an end-point
+% NODE(i).vvId:       list of vital vertices connected to end-point i
+
+NODE(num_tot_nod) = struct('X', [], 'Y', [], 'domain', [], 'ls', [],...
+    'childrenId', [], 'endPt', [], 'vvId', []);
+
+for inod=1:numnod
+    %% Get x-, y-coordinates and level set value
+    NODE(inod).X = x(inod); NODE(inod).Y = y(inod); NODE(inod).ls = ls(inod);
+    
+    %% Identify domain index
+    if (ls(inod)>0.0)
+        NODE(inod).domain = 2;
+    else
+        NODE(inod).domain = 1;
+    end
+    if(nodepartochild(inod)~=0)
+        NODE(inod).childrenId = nodepartochild(inod);
+        NODE(nodepartochild(inod)).X = x(inod); NODE(nodepartochild(inod)).Y = y(inod);
+        NODE(nodepartochild(inod)).ls = ls(inod);
+        if(ls(inod)>0.0)
+            NODE(nodepartochild(inod)).domain = 1;
+        else
+            NODE(nodepartochild(inod)).domain = 2;
+        end
+    end
+    
+    %% Identify end-points
+    set = find(cut_edge_conn==inod);
+    if(size(set,1)>1)
+        NODE(inod).endPt = 1;
+        children = NODE(inod).childrenId;
+        if(nodepartochild(inod)~=0)
+            NODE(children).endPt = 1;
+        end
+    else
+        NODE(inod).endPt = 0;
+        children = NODE(inod).childrenId;
+        if(nodepartochild(inod)~=0)
+            NODE(children).endPt = 0;
+        end
+    end
+end
+
+if(PARAMS.lmvv)
+    if(~isempty(VERT))
+        [NODE,ELEM,VERT,PARAMS] = identify_vital_vertices(NODE,ELEM,VERT,PARAMS,cut_edge_conn);
+    end
+end

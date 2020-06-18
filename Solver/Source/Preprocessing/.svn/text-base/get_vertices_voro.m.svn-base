@@ -1,0 +1,79 @@
+function[VERT,ELEM,cut_edge_conn,vsize,n_cut_edge] = get_vertices_voro(...
+    VERT,ELEM,e,vsize,csize,node,cut_edge_conn,edge_id,xint,yint,...
+    n_cut_edge,locGrn,intToGrn)
+
+% loop over the partial elements that are locally indexed by the same index
+% than the local grains
+for ilocSubElm=1:length(locGrn)
+    % find the intersection points belonging to locGrn(ilocGrn)
+    %% convert intToGrn to an array (this step can be done prior to entering the loop...)
+    maxRowLength = max(cellfun(@numel,intToGrn));
+    intToGrnMat = cell2mat(cellfun(@(x) [x,zeros(1,maxRowLength-numel(x))],intToGrn,'uni',false));
+    locInt = [];
+    for iCol=1:size(intToGrnMat,2)
+        if(isempty(locInt))
+            locInt = find(intToGrnMat(:,iCol)==locGrn(ilocSubElm));
+        else
+            locInt=union(locInt,find(intToGrnMat(:,iCol)==locGrn(ilocSubElm)));
+        end
+    end
+    % pairing the intersection points
+    %% finding complementary grains to locGrn(ilocGrn) in locGrn
+    compLocGrn = setdiff(locGrn,locGrn(ilocSubElm));
+    locCell=cell(length(compLocGrn),1);
+    for ilocInt=1:length(locInt)
+        %%% find or create the global id of the corresponding vertex
+        edge_info_e = get_local_cut_edges(locInt(ilocInt),e,node,edge_id);
+        SameEdgeConn = find(cut_edge_conn(1,:) == edge_info_e(1)...
+            & cut_edge_conn(2,:) == edge_info_e(2)...
+            & abs(cut_edge_conn(3,:)-xint(locInt(ilocInt)))<1e-12...
+            & abs(cut_edge_conn(4,:)-yint(locInt(ilocInt)))<1e-12, 1);
+        if(isempty(SameEdgeConn))
+            cut_edge_conn(1:2,(n_cut_edge+1)) = edge_info_e(1:2);
+            cut_edge_conn(3,(n_cut_edge+1)) = xint(locInt(ilocInt));
+            cut_edge_conn(4,(n_cut_edge+1)) = yint(locInt(ilocInt));
+            VERT(vsize+1).X = xint(locInt(ilocInt));
+            VERT(vsize+1).Y = yint(locInt(ilocInt));
+            vertOfEdge = vsize+1;
+            vsize=vsize+1;
+            n_cut_edge=n_cut_edge+1;
+        else
+            vertOfEdge = SameEdgeConn(1);
+        end
+        %%% finding the local segment index to which the intersection point
+        %%% belong
+        [~,segIndex] = intersect(compLocGrn,intToGrn{locInt(ilocInt)});
+        for iSeg=1:length(segIndex)
+            locCell{segIndex(iSeg)} = [locCell{segIndex(iSeg)} vertOfEdge];
+        end
+    end
+    % filling the pairs in ELEM
+    neighborGrns = zeros(length(segIndex),1);
+    pairCount=1;
+    for iPair=1:length(locCell)
+        if(length(locCell{iPair})==2)
+            neighborGrns(pairCount)=compLocGrn(iPair);
+            ELEM(csize+ilocSubElm).vertices(pairCount,:) = locCell{iPair};
+            pairCount=pairCount+1;
+        end
+    end
+    [~,locNeighbors] = intersect(locGrn',neighborGrns);
+    ELEM(csize+ilocSubElm).siblings = csize+locNeighbors;
+end
+end
+
+function[edge_info_e] = get_local_cut_edges(i_int,e,node,edge_id)
+
+if(i_int>length(edge_id))
+    edge_info_e = [0 0];
+else
+    if(edge_id(i_int)==21)
+        edge_info_e(1:2) = sort([node(2,e);node(1,e)]);
+    elseif(edge_id(i_int)==31)
+        edge_info_e(1:2) = sort([node(3,e);node(1,e)]);
+    elseif(edge_id(i_int)==32)
+        edge_info_e(1:2) = sort([node(3,e);node(2,e)]);
+    end
+end
+end
+

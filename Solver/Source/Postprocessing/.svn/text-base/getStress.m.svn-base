@@ -1,0 +1,21 @@
+function [stress] = getStress(ELEM,NODE,PARAMS,u)
+
+if(PARAMS.ndof==2)
+    stress = zeros(length(ELEM),3);
+else
+    stress = zeros(length(ELEM),2);
+end
+
+for e=1:length(ELEM)
+
+    %%%%% Calculate B Matrix %%%%%%%%%%
+    [B] = sfderivatives(ELEM(e).nodes,NODE,PARAMS.ndof);
+    
+    Dmat = get_elas_tensor(ELEM(e),PARAMS);
+
+    [uLoc] = get_local_solution(ELEM(e),PARAMS,u);
+    stress(e,:)=Dmat*B*uLoc;
+
+end
+
+end

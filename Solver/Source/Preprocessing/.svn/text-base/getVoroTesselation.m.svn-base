@@ -1,0 +1,218 @@
+function[nodeToGrain,VOR_SEG,VOR_VERT] = getVoroTesselation(x,y,node,p)
+
+tolLength = 1.5*(max(x)-min(x))/sqrt(length(node));
+p_bounds = [-5.0*max(abs(x)) -5.0*max(abs(x));
+    -5.0*max(abs(x))  5.0*max(abs(x));
+    5.0*max(abs(x))  5.0*max(abs(x));
+    5.0*max(abs(x)) -5.0*max(abs(x))];
+p_withBounds= [p; p_bounds];
+domX=[max(x) max(x) min(x) min(x) max(x)];
+domY=[max(y) min(y) min(y) max(y) max(y)];
+
+[VorVert,C]=voronoin(p_withBounds);
+% Regularize the Voronoi tesselation
+% Loop over the cells
+removedVert = zeros(length(VorVert),1);
+savedVert = zeros(length(VorVert),1);
+rmVertCount = 0;
+for icell=1:length(C)
+    % Loop over the connectivity of icell
+    [~,idx]=setdiff(C{icell},removedVert);
+    cellConn=C{icell}(sort(idx));
+    nseg=length(cellConn);
+    for iseg=1:nseg
+        index=rem(iseg,nseg);
+        ep1Id=cellConn(iseg);
+        ep2Id=cellConn(index+1);
+        if(norm(VorVert(ep1Id,:)-VorVert(ep2Id,:))<tolLength)
+            IN2 = inpolygon(VorVert(ep2Id,1),VorVert(ep2Id,2),domX,domY);
+            if(IN2==1)
+                fprintf('Removing %d from Voronoi cell %d\n',ep2Id,icell);
+                fprintf('Saving %d from Voronoi cell %d\n',ep1Id,icell);
+                removedVert(rmVertCount+1)=ep2Id;
+                savedVert(rmVertCount+1)=ep1Id;
+                rmVertCount = rmVertCount + 1;
+            end
+        end
+    end
+end
+removedVert(rmVertCount+1:end) = [];
+fprintf('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n');
+for icell=1:length(C)
+    % Loop over the connectivity of icell
+    fprintf('Before changing C{%d}:[ ',icell);
+    for ii=1:length(C{icell})
+        fprintf('%d ',C{icell}(ii));
+    end
+    fprintf(']\n');
+    [locRemVert,locRVId] = intersect(C{icell},removedVert);
+    if(~isempty(locRemVert))
+        [~,CorresSavedVertId] = intersect(removedVert,locRemVert);
+        [~,locSVId] = intersect(locRemVert,removedVert);
+        locSavVert = savedVert(CorresSavedVertId);
+        C{icell}(locRVId) = locSavVert(locSVId);
+        [~,connId] = unique(C{icell});
+        C{icell} = C{icell}(sort(connId));
+    end
+    fprintf('After changing C{%d}:[ ',icell);
+    for ii=1:length(C{icell})
+        fprintf('%d ',C{icell}(ii));
+    end
+    fprintf(']\n');
+    fprintf('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n');
+end
+
+
+vx_mod=zeros(2,length(VorVert));
+vy_mod=zeros(2,length(VorVert));
+segModCount = 0;
+for icell=1:length(C)
+    cellConn=C{icell};
+    nseg=length(cellConn);
+    for iseg=1:nseg
+        index=rem(iseg,nseg);
+        ep1Id=cellConn(iseg);
+        ep2Id=cellConn(index+1);
+        vx_mod(1,segModCount+1) = VorVert(ep1Id,1);
+        vx_mod(2,segModCount+1) = VorVert(ep2Id,1);
+        vy_mod(1,segModCount+1) = VorVert(ep1Id,2);
+        vy_mod(2,segModCount+1) = VorVert(ep2Id,2);
+        segModCount = segModCount+1;
+    end
+end
+
+%plot mesh with interfaces
+% triplot(node', x, y);
+% hold on;
+% [vx_withBounds, vy_withBounds] = voronoi(p_withBounds(:,1), p_withBounds(:,2));
+% plot ( vx_withBounds, vy_withBounds, '-', 'LineWidth', 4, 'Color', 'g' );
+% plot ( vx_mod, vy_mod, '-', 'LineWidth', 4, 'Color', 'r' );
+% % plot ( vx, vy, '-', 'LineWidth', 3, 'Color', 'r' );
+% axis([min(x),max(x),min(y),max(y)]);
+% % axis([-5,6,-5,6]);
+% plot ( p_withBounds(:,1), p_withBounds(:,2), 'ko', 'MarkerFaceColor','green', 'MarkerSize',10);
+
+
+% Structure VOR_VERT (only inside the computational domain)
+VOR_VERT(length(VorVert)) = struct('Id', [], 'X', [], 'Y', [], 'grns', []);
+vertInside = 0;
+
+nodeToGrain = zeros(length(x),1);
+% Assign grains to segments
+block_size = floor(2.*length(C));
+alloc_size = block_size;
+% Structure VOR_SEG
+% VOR_SEG(i).epXY = [epX    epY   ]
+% VOR_SEG(i).grns = [grn_1  grn_2 ]
+VOR_SEG(alloc_size) = struct('epXY', [], 'grns', []);
+VSepId = zeros(alloc_size,2); 
+segCount=1;
+% Loop over the cells minus the last four bounding points
+for icell=1:(length(C)-4)
+    cellConn=C{icell};
+    if(length(cellConn)<3)
+        %% only treat Voronoi cells that are at least triangle
+        continue;
+    end
+    % Assign grain to background nodes
+    INCELL = inpolygon(x,y,VorVert(cellConn,1),VorVert(cellConn,2));
+    nodeToGrain(INCELL==1) = icell;
+    % Loop over the connectivity of icell
+    nseg=length(cellConn);
+    for iseg=1:nseg
+        index=rem(iseg,nseg);
+        ep1Id=cellConn(iseg);
+        ep2Id=cellConn(index+1);
+        IN1 = inpolygon(VorVert(ep1Id,1),VorVert(ep1Id,2),domX,domY);
+        if(IN1==1)
+            vertId = find(ep1Id==[VOR_VERT.Id], 1);
+            if(isempty(vertId))
+                vertInside = vertInside+1;
+                VOR_VERT(vertInside).Id = ep1Id;
+                VOR_VERT(vertInside).X = VorVert(ep1Id,1);
+                VOR_VERT(vertInside).Y = VorVert(ep1Id,2);
+                VOR_VERT(vertInside).grns = icell;
+            else
+                if(isempty(find(icell==VOR_VERT(vertId).grns, 1)))
+                    VOR_VERT(vertId).grns = [VOR_VERT(vertId).grns icell];
+                end
+            end
+        end
+        IN2 = inpolygon(VorVert(ep2Id,1),VorVert(ep2Id,2),domX,domY);
+        if(IN2==1)
+            vertId = find(ep2Id==[VOR_VERT.Id], 1);
+            if(isempty(vertId))
+                vertInside = vertInside+1;
+                VOR_VERT(vertInside).Id = ep2Id;
+                VOR_VERT(vertInside).X = VorVert(ep2Id,1);
+                VOR_VERT(vertInside).Y = VorVert(ep2Id,2);
+                VOR_VERT(vertInside).grns = icell;
+            else
+                if(isempty(find(icell==VOR_VERT(vertId).grns, 1)))
+                    VOR_VERT(vertId).grns = [VOR_VERT(vertId).grns icell];
+                end
+            end
+        end
+        if(IN1 == 1 && IN2 == 1)
+            %% Case of Voronoi segment fully embedded in the computational domain
+            if(segCount==1)
+                VSepId(segCount,1:2)=[min(ep1Id,ep2Id) max(ep1Id,ep2Id)];
+                VOR_SEG(segCount).epXY(1,1:2)=[VorVert(ep1Id,1) VorVert(ep1Id,2)];
+                VOR_SEG(segCount).epXY(2,1:2)=[VorVert(ep2Id,1) VorVert(ep2Id,2)];
+                VOR_SEG(segCount).grns(1)=icell;
+                segCount=segCount+1;
+            else
+                segId = find(VSepId(:,1)==min(ep1Id,ep2Id) & VSepId(:,2)==max(ep1Id,ep2Id));
+                if (~isempty(segId))
+                    VOR_SEG(segId(1,1)).grns(2)=icell;
+                    VOR_SEG(segId(1,1)).grns = sort(VOR_SEG(segId(1,1)).grns);
+                else
+                    VSepId(segCount,1:2)=[min(ep1Id,ep2Id) max(ep1Id,ep2Id)];
+                    VOR_SEG(segCount).epXY(1,1:2)=[VorVert(ep1Id,1) VorVert(ep1Id,2)];
+                    VOR_SEG(segCount).epXY(2,1:2)=[VorVert(ep2Id,1) VorVert(ep2Id,2)];
+                    VOR_SEG(segCount).grns(1)=icell;
+                    segCount=segCount+1;
+                end
+            end
+        else
+            %% Case of Voronoi segment intersecting the computational domain boundary
+            %% without any of its end-points being actually inside the computational domain
+            [Xint Yint]=intersections([VorVert(ep1Id,1) VorVert(ep2Id,1)], [VorVert(ep1Id,2) VorVert(ep2Id,2)],domX,domY);
+            if (~isempty(Xint))
+                if(length(Xint)==1)
+                    if((Xint==VorVert(ep1Id,1) && Yint==VorVert(ep1Id,2)) || (Xint==VorVert(ep2Id,1) && Yint==VorVert(ep2Id,2)))
+                        continue;
+                    end
+                end
+                if(segCount==1)
+                    VSepId(segCount,1:2)=[min(ep1Id,ep2Id) max(ep1Id,ep2Id)];
+                    VOR_SEG(segCount).epXY(1,1:2)=[VorVert(ep1Id,1) VorVert(ep1Id,2)];
+                    VOR_SEG(segCount).epXY(2,1:2)=[VorVert(ep2Id,1) VorVert(ep2Id,2)];
+                    VOR_SEG(segCount).grns(1)=icell;
+                    segCount=segCount+1;
+                else
+                    segId = find(VSepId(:,1)==min(ep1Id,ep2Id) & VSepId(:,2)==max(ep1Id,ep2Id));
+                    if (~isempty(segId))
+                        VOR_SEG(segId(1,1)).grns(2)=icell;
+                        VOR_SEG(segId(1,1)).grns = sort(VOR_SEG(segId(1,1)).grns);
+                    else
+                        VSepId(segCount,1:2)=[min(ep1Id,ep2Id) max(ep1Id,ep2Id)];
+                        VOR_SEG(segCount).epXY(1,1:2)=[VorVert(ep1Id,1) VorVert(ep1Id,2)];
+                        VOR_SEG(segCount).epXY(2,1:2)=[VorVert(ep2Id,1) VorVert(ep2Id,2)];
+                        VOR_SEG(segCount).grns(1)=icell;
+                        segCount=segCount+1;
+                    end
+                end
+            end
+        end
+    end
+    % Memory allocation
+    if(segCount + 0.1*alloc_size>alloc_size)
+        VSepId = [VSepId; zeros(block_size,2)];
+        alloc_size = alloc_size + block_size;
+        VOR_SEG(alloc_size) = struct('epXY', [], 'grns', []);
+    end
+end
+VOR_SEG(segCount:end) = [];
+VOR_VERT(vertInside+1:end) = [];
+

@@ -1,0 +1,225 @@
+function [u] = solve_nitsche(ELEM,NODE,VERT,PARAMS)
+
+fprintf('*************************************************************************** \n')
+if(PARAMS.nit_t||PARAMS.nit_n)
+    fprintf('                         Nitsche''s Method')
+    if (PARAMS.gamFlag==2)
+        fprintf(' : Robust \n');
+    elseif (PARAMS.gamFlag==1)
+        fprintf(' : Hansbo \n');
+    else
+        fprintf(' : Classical \n');
+    end
+else
+    fprintf('                         Penalty Method \n')
+end
+fprintf('*************************************************************************** \n')
+
+if(~PARAMS.newton)
+    
+    %%%%%%%% Prescribe boundary conditions %%%%%%%%%%%
+    [ifixu, u] = essentialbcs(NODE,PARAMS);
+    
+    %%%%%%% Calculate global stiffness and external force %%%%%%%%%%%%
+    fprintf('Assembling linear algebraic system \n')
+    [bigk,fext] = assemble_nitsche(NODE,ELEM,VERT,PARAMS);
+    
+    %%%%%%%% Apply boundary conditions %%%%%%%%%%%%%
+    [bigk,fext] = applybcs(ifixu,u,bigk,fext,PARAMS);
+    
+    u = bigk\fext;
+else    
+    if(PARAMS.debug)
+        uexDebug = zeros(PARAMS.timeStepping(1),2);
+        loadDebug = zeros(PARAMS.timeStepping(1),1);
+        tracDebug = zeros(PARAMS.timeStepping(1)+1,length(PARAMS.elmId),2,2);
+        uJumpDebug = zeros(PARAMS.timeStepping(1)+1,length(PARAMS.elmId),2,2);
+    end    
+    
+    % Initialize counters and variables
+    iLoad=1; convIter=zeros(4,1);
+    u = zeros(PARAMS.ndof*length(NODE),2); PARAMS.iLoad=0; PARAMS.LoadScaling=0;    
+    
+    % Export results at zero load
+    PARAMS.plotFile = ['FullyTied_Nit_gamma_' num2str(PARAMS.gamFlag) '_0'];
+    generateVTK(ELEM,NODE,VERT,PARAMS,u(:,1));
+    
+    while(iLoad<=PARAMS.timeStepping(1))
+        
+        PARAMS.iLoad = iLoad; 
+        fprintf('Load step %d:\n', iLoad);
+        % Specify Dirichlet boundary conditions
+        [ifixu, u(:,2)] = essentialbcs(NODE,PARAMS,u(:,1));
+        
+        if(PARAMS.debug)
+            loadDebug(iLoad+1) = PARAMS.iLoad;
+            uexDebug(iLoad+1,:) = u(145:146,2)';
+        end
+        
+        for iIter=1:PARAMS.maxIter
+            PARAMS.iIter = iIter;
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            % Residual and tangent stiffness assembly, solution for incremental displacement
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            [bigKT,bigR,ELEM] = assemble_nitsche_newton(NODE,ELEM,VERT,PARAMS,u(:,2));
+            [bigKT,bigR] = applybcs(ifixu,u(:,2),bigKT,bigR,PARAMS);            
+            deltaU = bigKT\bigR;
+            u(:,2) = u(:,2) + deltaU;
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            %           Calculate energy norm to check for convergence                     %
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            if(iIter==1)
+                % Normalize energy norm with respect to first iteration
+                deltaU0 = deltaU;
+                R0 = bigR;
+            end
+            eNorm = norm((deltaU'*bigR)/(deltaU0'*R0));
+            fprintf('\t    Iteration %d:\t', iIter);
+            fprintf('\t\t     Energy norm = %6.2e\n',eNorm);
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            if(eNorm<=PARAMS.tol)
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %                        Re-equilibriate                                 %
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%                                
+                [bigKT,bigR,ELEM] = assemble_nitsche_newton(NODE,ELEM,VERT,PARAMS,u(:,2));                
+                [bigKT,bigR] = applybcs(ifixu,u(:,2),bigKT,bigR,PARAMS);                
+                deltaU = bigKT\bigR;
+                u(:,2) = u(:,2) + deltaU;
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %         Check for energy norm after re-equilibriating                  %
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                eNormReEq = norm((deltaU'*bigR)/(deltaU0'*R0));
+                fprintf('Converged:\n');
+                fprintf('      Re-equilibriating:\t');
+                fprintf('\t\t     Energy norm = %6.2e\n\n',eNormReEq);
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %           Update the internal variables                                %
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                for e=1:length(ELEM)
+                    if(~isempty(ELEM(e).vertices))
+                        ELEM(e).uJumpPl(:,:,1) = ELEM(e).uJumpPl(:,:,2);
+                        ELEM(e).uJumpPl(:,:,2) = zeros(2,2,1);
+                    end
+                end
+                u(:,1) = u(:,2);
+                u(:,2) = zeros(PARAMS.ndof*length(NODE),1);                           
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %                Increment loading factor                                 %
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                if(PARAMS.iLoad<=PARAMS.timeStepping(2))
+                    PARAMS.LoadScaling = PARAMS.LoadScaling + PARAMS.facLoad*PARAMS.DelLoadIni;
+                else
+                    PARAMS.LoadScaling = PARAMS.LoadScaling - PARAMS.facUnLoad*PARAMS.DelUnLoadIni;
+                end
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                % Store number of iterations for convergence in the past 4 load steps      %
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                if(iLoad<=4)
+                    convIter(iLoad) = iIter;                 
+                end
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                iLoad = iLoad+1;
+                if(iLoad>4)
+                    %  Check whether load step can be increased
+                   [PARAMS,convIter] = get_accelerated_loading_rate(PARAMS,convIter);
+                end
+                break;
+            elseif(iIter==PARAMS.maxIter)
+                fprintf('Failed to converge in %d iterations, re-running with a smaller load increment \n',iIter)
+                u(:,2) = zeros(PARAMS.ndof*length(NODE),1);    % Reinitialize displacement in the current load step
+                % Decrease the load step and get the total number of load steps
+                [PARAMS] = get_decelerated_loading_rate(PARAMS);
+            end
+        end
+
+        if(PARAMS.debug && iIter<PARAMS.maxIter)
+            for iElm=1:length(PARAMS.elmId)
+                tracDebug(PARAMS.iLoad+1,iElm,:,:) = ELEM(PARAMS.elmId(iElm)).tracInt;
+                uJumpDebug(PARAMS.iLoad+1,iElm,:,:) = ELEM(PARAMS.elmId(iElm)).uJump;
+            end
+        end
+
+        if(iIter<PARAMS.maxIter)
+            generateVTK(ELEM,NODE,VERT,PARAMS,u(:,1));
+        end
+    end
+    
+    if(PARAMS.debug)
+        if(length(uexDebug)>PARAMS.timeStepping(1)+1)
+            uexDebug(PARAMS.timeStepping(1)+2:length(uexDebug),:) = [];
+            loadDebug(PARAMS.timeStepping(1)+2:length(loadDebug),:) = [];
+            uJumpDebug(PARAMS.timeStepping(1)+2:length(uJumpDebug),:,:,:) = [];
+            tracDebug(PARAMS.timeStepping(1)+2:length(tracDebug),:,:,:,:) = [];
+        end
+        plotDebugArrays(tracDebug,uJumpDebug,uexDebug,loadDebug,PARAMS);
+    end
+end
+end
+
+function[PARAMS] = get_decelerated_loading_rate(PARAMS)
+    % Decrease the load step by half to aid N-R convergence
+    if(PARAMS.iLoad<=PARAMS.timeStepping(2))
+        PARAMS.facLoad=0.5*PARAMS.facLoad;
+        nUnLoadSteps = PARAMS.timeStepping(1)-PARAMS.timeStepping(2);
+        PARAMS.timeStepping(2) = (PARAMS.iLoad-1) + 2*(PARAMS.timeStepping(2)-(PARAMS.iLoad-1));
+        PARAMS.timeStepping(1) = PARAMS.timeStepping(2) + nUnLoadSteps;
+    else
+        PARAMS.facUnLoad = 0.5*PARAMS.facUnLoad;
+        nUnLoadSteps = ((PARAMS.iLoad-1)-PARAMS.timeStepping(2)) + 2*(PARAMS.timeStepping(1)-(PARAMS.iLoad-1));
+        PARAMS.timeStepping(1) = PARAMS.timeStepping(2) + nUnLoadSteps;
+    end
+end
+
+function [PARAMS,convIter] = get_accelerated_loading_rate(PARAMS,convIter)
+if((PARAMS.iLoad+1)~=5)
+    convIter(1:3) = convIter(2:4); convIter(4) = PARAMS.iIter;
+end
+% Check if number of iterations for convergence in the last four load steps is less than 4
+% If yes, increase the load step to twice as much as long as load step is
+% smaller than the initially specified value
+if(length(find(convIter<=4))==4)
+    if((PARAMS.iLoad+1)<=PARAMS.timeStepping(2))
+        if(rem(0.5*(PARAMS.timeStepping(2)-PARAMS.iLoad),1)==0)
+            if(PARAMS.facLoad<1)
+                PARAMS.facLoad=2*PARAMS.facLoad;
+                nUnLoadSteps = PARAMS.timeStepping(1)-PARAMS.timeStepping(2);
+                PARAMS.timeStepping(2) = PARAMS.iLoad+0.5*(PARAMS.timeStepping(2)-PARAMS.iLoad);
+                PARAMS.timeStepping(1)=PARAMS.timeStepping(2)+nUnLoadSteps;
+            end
+        end
+    else
+        if(rem(0.5*(PARAMS.timeStepping(1)-PARAMS.iLoad),1)==0)
+            if(PARAMS.facUnLoad<1)
+                PARAMS.facUnLoad = 2*PARAMS.facUnLoad;
+                nUnLoadSteps = (PARAMS.iLoad-PARAMS.timeStepping(2))+0.5*(PARAMS.timeStepping(1)-PARAMS.iLoad);
+                PARAMS.timeStepping(1) = PARAMS.timeStepping(2) + nUnLoadSteps;
+            end
+        end
+    end
+end
+end
+
+function[] = plotDebugArrays(tracDebug,uJumpDebug,uexDebug,loadDebug,PARAMS)
+lineSpec = ['-' '--' ':' '-.'];
+markerSpec = ['+' 'o' 's' '*' 'x' '.' 'd' '^' 'v' '<' '>' 'p' 'h'];
+colorSpec = ['r' 'g' 'b' 'c' 'm' 'k']; DirName = ['Normal    '; 'Tangential'];
+figCount = 0;
+for iElm=1:length(PARAMS.elmId)
+    for iGp=1:2
+        for iDir=2:2
+            figCount = figCount+1;
+            figure(figCount); plot(uJumpDebug(:,iElm,iGp,iDir),tracDebug(:,iElm,iGp,iDir),...
+                [lineSpec(randi(4,1)) colorSpec(randi(6,1)) markerSpec(randi(13,1))],'LineWidth',2);
+            title(['Elm #',int2str(PARAMS.elmId(iElm)),' GP #',int2str(iGp),' Direction:',DirName(iDir,:)],...
+                'FontSize',14)
+        end
+    end
+end
+figure(figCount+1); plot(loadDebug,uexDebug(:,1),...
+    [lineSpec(randi(4,1)) colorSpec(randi(6,1)) markerSpec(randi(13,1))],'LineWidth',2);
+title('Loading curve in X','FontSize',14)
+figure(figCount+2); plot(loadDebug,uexDebug(:,2),...
+    [lineSpec(randi(4,1)) colorSpec(randi(6,1)) markerSpec(randi(13,1))],'LineWidth',2);
+title('Loading curve in Y','FontSize',14)
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

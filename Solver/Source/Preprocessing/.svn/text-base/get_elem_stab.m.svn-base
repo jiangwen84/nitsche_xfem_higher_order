@@ -1,0 +1,27 @@
+function [ELEM] = get_elem_stab(ELEM,VERT,csize,locGrn)
+mat_param;
+for i=1:length(locGrn)
+    xVal = [VERT(ELEM(csize+i).vertices(1,1:2)).X];
+    yVal = [VERT(ELEM(csize+i).vertices(1,1:2)).Y];
+    Grn = ELEM(csize+i).domain;
+    Dmat = get_elas_tensor(E(Grn),nu(Grn),plane_strain);
+    sibId1 = ELEM(csize+i).siblings(1);
+    sibGrn1 = ELEM(sibId1).domain;
+    DmatSib1 = get_elas_tensor(E(sibGrn1),nu(sibGrn1),plane_strain);
+    ELEM(csize+i).stab(1) = compute_segment_stab(xVal,yVal,Dmat,DmatSib1,ELEM(csize+i).volume,ELEM(sibId1).volume);
+    if(size(ELEM(csize+i).vertices,1)>1)
+        xVal = [VERT(ELEM(csize+i).vertices(2,1:2)).X];
+        yVal = [VERT(ELEM(csize+i).vertices(2,1:2)).Y];
+        sibId2 = ELEM(csize+i).siblings(2);
+        sibGrn2 = ELEM(sibId2).domain;
+        DmatSib2 = get_elas_tensor(E(sibGrn2),nu(sibGrn2),plane_strain);
+        ELEM(csize+i).stab(2) = compute_segment_stab(xVal,yVal,Dmat,DmatSib2,ELEM(csize+i).volume,ELEM(sibId2).volume);
+    end
+end
+
+function [alpha] = compute_segment_stab(xVal,yVal,Dmat,DmatSib,Vol,sibVol)
+
+length_seg = sqrt((xVal(2)-xVal(1))^2 + (yVal(2)-yVal(1))^2);
+Diag = eye(3); Diag(3,3) = 2; % To account for the factor of 2 in shear strains
+D_avg = norm(Dmat*Diag)/Vol + norm(DmatSib*Diag)/sibVol;
+alpha = (2/4)*length_seg*D_avg;

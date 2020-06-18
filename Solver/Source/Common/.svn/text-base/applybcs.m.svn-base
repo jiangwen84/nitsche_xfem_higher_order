@@ -1,0 +1,26 @@
+function [bigk,fext] = applybcs(ifixu,u,bigk,fext,PARAMS)
+
+dof = length(ifixu);
+
+if(~PARAMS.newton)
+    for n=1:dof
+        if (ifixu(n) == 1)
+            for b=1:dof
+                fext(b) = fext(b) - bigk(b,n)*u(n);
+            end
+            bigk(n,1:dof) = zeros(1,dof);
+            bigk(1:dof,n) = zeros(1,dof);
+            bigk(n,n) = 1.0;
+            fext(n) = u(n);
+        end
+    end
+else
+    for iNod=1:dof
+        if(ifixu(iNod)==1)
+            bigk(iNod,1:dof) = zeros(1,dof);
+            bigk(1:dof,iNod) = zeros(1,dof);
+            bigk(iNod,iNod) = 1.0;
+            fext(iNod) = 0.0;
+        end
+    end
+end

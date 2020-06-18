@@ -1,0 +1,96 @@
+function [ weight] = get_weight(elem,NODE,VERT,VERT_ELE,PARAMS)
+%UNTITLED Summary of this function goes here
+%   Detailed explanation goes here
+gauss_six = [ 0.445948490915965   0.445948490915965   
+              0.445948490915965   0.108103018168070   
+              0.108103018168070   0.445948490915965   
+              0.091576213509771   0.091576213509771  
+              0.091576213509771   0.816847572980459   
+              0.816847572980459   0.091576213509771];
+        
+w_six = [0.111690794839006 0.111690794839006 0.111690794839006 0.054975871827661 0.054975871827661 0.054975871827661]; 
+
+nlink = PARAMS.nlink;
+ndof = PARAMS.ndof;
+
+weight = zeros(6,1);
+
+if(~isempty(elem.vertices_ele))
+    
+    if(~isempty(elem.vertices))    
+        Id = find(elem.vertices_ele_virt==1);
+        
+        if(length(Id)==1)          
+            xe = zeros(3,1);
+            ye = zeros(3,1);
+            
+            xe(1) = [VERT_ELE(elem.vertices_ele).X];
+            ye(1) = [VERT_ELE(elem.vertices_ele).Y];
+           
+            xe(2:3) = [VERT(elem.vertices).X];
+            ye(2:3) = [VERT(elem.vertices).Y];
+            
+            xe = xe';
+            ye = ye';
+            
+            [gauss_x,gauss_y] = gauss_map(elem,NODE);
+        
+            weight = moments_fitting(xe,ye,gauss_x,gauss_y); 
+            
+            if(sum(weight)<0)
+              weight = -weight;
+            end
+            
+        else
+            [quadCoord] = orderWedgeConn( VERT_ELE( elem.vertices_ele(Id) ), VERT(elem.vertices) );
+        
+            xe = quadCoord(1,:)';
+            ye = quadCoord(2,:)';
+           
+            [gauss_x,gauss_y] = gauss_map(elem,NODE);
+        
+            weight = moments_fitting(xe,ye,gauss_x,gauss_y);
+        end
+    else
+        xe = [VERT_ELE(elem.vertices_ele).X];
+        ye = [VERT_ELE(elem.vertices_ele).Y];
+        
+        [gauss_x,gauss_y] = gauss_map(elem,NODE);
+        
+        weight = moments_fitting(xe,ye,gauss_x,gauss_y);
+    
+    end
+else
+        xe = [NODE(elem.nodes).X];
+        ye = [NODE(elem.nodes).Y];
+        xe = xe';
+        ye = ye';
+        
+        for i = 1:6
+            psi = gauss_six(i,1);
+            eta = gauss_six(i,2);           
+            GN    = 0.25 * [eta-1  1-eta   1+eta   -eta-1;
+                        psi-1  -psi-1  1+psi    1-psi];
+            Jacobian = GN*[xe ye];       % compute Jacobian matrix 
+            detJ  = det(Jacobian);    
+            weight(i) = w_six(i)*detJ;
+        end
+    
+        
+        
+        
+        
+            
+            
+            
+            
+            
+            
+            
+        
+        
+        
+     
+     
+end
+

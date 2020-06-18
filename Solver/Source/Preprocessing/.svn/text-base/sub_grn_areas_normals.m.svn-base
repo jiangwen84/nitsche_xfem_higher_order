@@ -1,0 +1,84 @@
+function [ELEM] = sub_grn_areas_normals(ELEM,VERT,csize,locGrn,x,y,ie,nlink,node)
+
+for i=1:length(locGrn)
+    parNodId = find(ELEM(csize+i).nodes<=length(x));
+    try
+        xVal = [VERT(unique([ELEM(csize+i).vertices])).X x(ELEM(csize+i).nodes(parNodId))'];
+    catch err
+        display(ie);
+        display(csize);
+        display(i);
+        display(unique([ELEM(csize+i).vertices]));
+        display(VERT(unique([ELEM(csize+i).vertices])).X);
+        display(err);
+    end
+    yVal = [VERT(unique([ELEM(csize+i).vertices])).Y y(ELEM(csize+i).nodes(parNodId))'];
+    if(length(xVal)>4)
+        fprintf('partial area is neither a tri nor quad\n');
+        TRI = delaunay(xVal,yVal);
+        ELEM(csize+i).volume = 0.0;
+        for iTri=1:size(TRI,1)
+            ELEM(csize+i).volume = ELEM(csize+i).volume +...
+                polyarea(xVal(TRI(iTri,:)),yVal(TRI(iTri,:)));
+        end
+    else
+        conn = convhull(xVal,yVal);
+        if(length(unique(conn))<length(xVal))
+            fprintf('The physical volume of elem %d is not convex!!\n',ie);
+            if(length(parNodId)~=1)
+                err = MException('PhysNodChk:MoreThanOnce',...
+                    'elem %d has a non-convex physical domain and length(parNodId) = %d',ie,length(parNodId));
+                throw(err);
+            end
+            vertInConvexHull = setdiff(conn,4);
+            vertOutConvexHull = setdiff([1 2 3 4],conn);
+            conn1 = [4,vertInConvexHull(1),vertOutConvexHull];
+            conn2 = [4,vertInConvexHull(2),vertOutConvexHull];
+            ELEM(csize+i).volume = polyarea(xVal(conn1),yVal(conn1))+...
+                polyarea(xVal(conn2),yVal(conn2));
+        else
+            ELEM(csize+i).volume = polyarea(xVal(conn),yVal(conn));
+        end
+    end
+    xVer=[VERT(ELEM(csize+i).vertices(1,:)).X];
+    yVer=[VERT(ELEM(csize+i).vertices(1,:)).Y];
+    if(isempty(parNodId))
+        % case where no node is physical => take the other vertex
+        xPar=VERT(ELEM(csize+i).vertices(2,1)).X;
+        yPar=VERT(ELEM(csize+i).vertices(2,1)).Y;
+    else
+        xPar=x(ELEM(csize+i).nodes(parNodId(1)));
+        yPar=y(ELEM(csize+i).nodes(parNodId(1)));
+    end
+    ELEM(csize+i).normals(1,1:2) = compute_segment_normal(xVer,yVer,xPar,yPar);
+    if(size(ELEM(csize+i).vertices,1)>1)
+        if(isempty(parNodId))
+            % case where no node is physical => take the other vertex
+            xPar=VERT(ELEM(csize+i).vertices(1,1)).X;
+            yPar=VERT(ELEM(csize+i).vertices(1,1)).Y;
+        end
+        xVer=[VERT(ELEM(csize+i).vertices(2,:)).X];
+        yVer=[VERT(ELEM(csize+i).vertices(2,:)).Y];
+        ELEM(csize+i).normals(2,1:2) = compute_segment_normal(xVer,yVer,xPar,yPar);
+    end
+end
+
+% volume check
+origVol = polyarea(x(node(1:nlink,ie)),y(node(1:nlink,ie)));
+newVol = 0.0;
+for lg=1:length(locGrn)
+    newVol = newVol + ELEM(csize+lg).volume;
+end
+if(abs(newVol-origVol)>1e-12)
+    fprintf('For origElm %d: newVol and oldVol do not match!!\n',ie);
+end
+end
+
+function [normal] = compute_segment_normal(xv,yv,xpar,ypar)
+% compute slope
+dx = xv(2) - xv(1);
+dy = yv(2) - yv(1);
+outDir= [xv(1)-xpar yv(1)-ypar];
+s = sign(dot(outDir,[dy -dx]));
+normal = s*[dy -dx]/sqrt(dx^2+dy^2);
+end

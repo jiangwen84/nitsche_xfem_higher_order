@@ -1,0 +1,49 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%        Planar interface with perfect continuity at the interface        %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+clear; clc;
+mat_param;
+
+%%%%%%%%% Add path for the source codes %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+restoredefaultpath;
+absolutPath = '/home/ascsekhar/Documents/Research/Codes/SubVersioned/Embedded_2D/';
+addpath(genpath([absolutPath 'Solver/Source/']))
+addpath(genpath([absolutPath 'Solver/Benchmark_Examples/Planar_Interface/Fully_Tied_X/']))
+
+%%%%%%%%% Structure PARAMS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% gamFlag = ( 0 -> gamma = 1/2 )
+%        or ( 1 -> gamma = "Hansbo" : Weighted area)
+%        or ( 2 -> gamma = "Robust": Weighted area and stiffnesses ) 
+% pen_n = value of the penalty parameter in the normal direction
+% pen_t = value of the penalty parameter in the tangential direction
+PARAMS = struct('gamFlag', 2, 'nit_n', true, 'nit_t', true, 'pen_n', 1e5*max(E),...
+    'pen_t', 1e5*max(E), 'plane_strain', true, 'debug', true, 'plotInt', false, 'newton', false, 'lmvv', false, 'ndof', 2);
+
+%%%%%%%% Background mesh and level set information %%%%%%%%%%%%%%%%%%%%%%%
+xdiv=1; ydiv=1;
+[x,y,node] = squaremesh(xdiv,ydiv);
+% mesh_file = [absolutPath,'../Pre-PostProcessor/Mesh_Files/unstructSquare.msh'];
+% [x,y,node] = readmesh(mesh_file);
+
+%%%%%%%%% Level set information %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+PARAMS.Xmin = min(x); PARAMS.Xmax = max(x); PARAMS.xint = 0.6;
+ls = x - (PARAMS.xint*((PARAMS.Xmax-PARAMS.Xmin)+PARAMS.Xmin));
+
+%%%%%%%%% Preprocessing to account for Hansbo formulation %%%%%%%%%%%%%%%%%
+[ELEM,NODE,VERT,PARAMS] = comp_geo_ls(x,y,node,ls,PARAMS);
+
+%%%%%%%%% Mechanical solver routines belong here %%%%%%%%%%%%%%%%%%%%%%%%%%
+if(~PARAMS.lmvv)
+    [u] = solve_nitsche(ELEM,NODE,VERT,PARAMS);
+    [L2Err,NrgErr,H1Err] = get_Lp_errors_bulk(NODE,ELEM,VERT,PARAMS,u);
+    [int_traction,CentCoord] = get_interface_traction(NODE,ELEM,VERT,PARAMS,u);
+    PARAMS.plotPath = [absolutPath 'Pre-PostProcessor/Results/Planar_Interface/Fully_Tied/'];
+    PARAMS.plotFileBase = ['Fully_Tied_Y_Nit_gamma_' num2str(PARAMS.gamFlag)];
+    generateVTK(ELEM,NODE,VERT,PARAMS,u);
+else
+    [u] = solve_lmvv(ELEM,NODE,VERT,PARAMS);
+    plotFile = 'FullyTied_Lmvv';
+end
+
+plotPath = [absolutPath '../Pre-PostProcessor/Results/Planar_Interface/Fully_Tied/'];
+generateVTK(ELEM,NODE,VERT,PARAMS,u(1:length(NODE)*PARAMS.ndof),plotPath,plotFile);

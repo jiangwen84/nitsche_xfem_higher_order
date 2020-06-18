@@ -1,0 +1,130 @@
+function[quadNod] = getDegenQuadCoord(elem,NODE,VERT)
+
+%%  Local coordinate system for a cube element:
+%%
+%%           A 
+%%           |
+%%           5----------------8
+%%          /|               /|
+%%         / |              / |
+%%        /  |             /  |
+%%       /   |            /   |
+%%      6----+-----------7    |
+%%      |    |           |    |
+%%      |    |           |    |
+%%      |    |           |    |
+%%      |    |           |    |
+%%      |    1-----------+----4-->
+%%      |   /            |   /
+%%      |  /             |  /
+%%      | /              | /
+%%      |/               |/
+%%      2----------------3
+%%     /
+%%    V
+%%
+
+quadNod(4) = struct('X',[],'Y',[]); 
+
+if(isempty(elem.vertices))
+    %%%% Global coordinates of the uncut tetrahedral element
+    xe = [NODE(elem.nodes(1:3)).X];
+    ye = [NODE(elem.nodes(1:3)).Y];
+    %%%% Degenerated coordinates of the uncut tetrahedral element
+    quadNod(1).X = xe(1); quadNod(1).Y = ye(1);
+    quadNod(2).X = xe(2); quadNod(2).Y = ye(2);
+    quadNod(3).X = xe(3); quadNod(3).Y = ye(3);
+    quadNod(4).X = xe(3); quadNod(4).Y = ye(3);
+else
+    %%%% Index of the physical node of the cut tetrahedral element
+    physNode = get_physical_nodes(elem,NODE);
+    if(length(elem.vertices)==2)
+        if(length(physNode)==1)
+            %%%% Global coordinates of the sub-element
+            xp = [NODE(physNode).X];   xv = [VERT(elem.vertices).X];
+            yp = [NODE(physNode).Y];   yv = [VERT(elem.vertices).Y];
+            %%%% Degenerated coordinates of the sub-triangular element
+            quadNod(1).X = xp(1); quadNod(1).Y = yp(1);
+            quadNod(2).X = xp(1); quadNod(2).Y = yp(1);
+            quadNod(3).X = xv(1); quadNod(3).Y = yv(1);
+            quadNod(4).X = xv(2); quadNod(4).Y = yv(2);      
+        elseif(length(physNode)==2)
+            [quadCoord] = orderWedgeConn(elem,NODE(physNode),VERT(elem.vertices));
+            for iCoord=1:4
+                quadNod(iCoord).X = quadCoord(1,iCoord);
+                quadNod(iCoord).Y = quadCoord(2,iCoord);
+            end
+        else
+            err = MException('tetCutChk:physNodeChk',...
+                'in fourthOrderGaussQuad 3 vertices and %d physical nodes',...
+                length(physNode));
+            throw(err);
+        end
+    else
+        err = MException('tetCutChk:physNodeChk',...
+            'in fourthOrderGaussQuad, wrong number of vertices: %d',...
+            length(elem.vertices));
+        throw(err);        
+    end
+end
+
+end
+
+function[physNode] = get_physical_nodes(elem,NODE)
+
+physNode = zeros(3,1);
+pNcount = 0;
+for in=1:3
+    if(~isempty(NODE(elem.nodes(in)).childrenId))
+        pNcount=pNcount+1;
+        physNode(pNcount) = elem.nodes(in);
+    end
+end
+physNode(pNcount+1:end) = [];
+end
+
+function[quadCoord] = orderWedgeConn(elem,pNod,vert)
+quadCoord = [vert.X pNod.X; vert.Y pNod.Y];
+%%%% Subroutine to order intersection points %%%%%%%%%%%%%%
+%%%%% Prevents formation of a bow-tie configuration %%%%%%%%%%%
+
+flag = 0;
+count = 0;
+
+while(flag==0)
+    AB = [quadCoord(1,2)-quadCoord(1,1),quadCoord(2,2)-quadCoord(2,1),0];
+    BC = [quadCoord(1,3)-quadCoord(1,2),quadCoord(2,3)-quadCoord(2,2),0];
+    crossp1 = cross(AB,BC); 
+    
+    CD = [quadCoord(1,4)-quadCoord(1,3),quadCoord(2,4)-quadCoord(2,3),0];
+    DA = [quadCoord(1,1)-quadCoord(1,4),quadCoord(2,1)-quadCoord(2,4),0];
+    crossp2 = cross(CD,DA);
+    
+    dotnormals = dot(crossp1,crossp2);    
+    
+    if(dotnormals<0)
+        count = count + 1;
+        if(count==1)
+            quadCoord(:,[3 4]) = quadCoord(:,[4 3]);
+%             xtemp = quadCoord(1,4); ytemp = quadCoord(2,4);
+%             quadCoord(1,4) = quadCoord(1,3); quadCoord(2,4) = quadCoord(2,3);
+%             quadCoord(1,3) = xtemp; quadCoord(2,3) = ytemp;
+        elseif(count==2)
+            quadCoord(:,[2 3]) = quadCoord(:,[3 2]);
+%             xtemp = quadCoord(1,3); ytemp = quadCoord(2,3); 
+%             quadCoord(1,3) = quadCoord(1,2); quadCoord(2,3) = quadCoord(2,2); 
+%             quadCoord(1,2) = xtemp; quadCoord(2,2) = ytemp; 
+        end
+        
+    else
+        flag = 1;
+        checknormal = dot(crossp1,[0 0 -1]);
+        if (checknormal>0)
+            quadCoord(:,[2 4]) = quadCoord(:,[4 2]);
+%             xtemp = quadCoord(1,2); ytemp = quadCoord(2,2);
+%             quadCoord(1,2) = quadCoord(1,4); quadCoord(2,2) = quadCoord(2,4);
+%             quadCoord(1,4) = xtemp; quadCoord(2,4) = ytemp;
+        end
+    end
+end
+end

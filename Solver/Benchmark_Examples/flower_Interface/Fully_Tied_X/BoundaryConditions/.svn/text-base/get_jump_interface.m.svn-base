@@ -1,0 +1,3 @@
+function [u_jump] = get_jump_interface(x,y,normal)
+
+u_jump = 0.0;

@@ -1,0 +1,213 @@
+function[ELEM,NODE,VERT,PARAMS] = comp_geo_voro(x,y,node,p)
+
+fprintf('*************************************************************************** \n')
+fprintf('                         Pre-processing\n')
+fprintf('*************************************************************************** \n')
+
+fprintf('Computational geometry for enriched formulation\n')
+
+numnod = size(x,1); numele = size(node,2);
+nlink = 3;
+
+PARAMS = struct('num_bg_nod', numnod, 'num_bg_ele', numele, 'sum_num_vv_e', 0, 'nlink', 3);
+
+%% Compute the Voronoi tesselation
+[nodeToGrain,VOR_SEG,VOR_VERT] = getVoroTesselation(x,y,node,p);
+nodeToGrain = [nodeToGrain; zeros(2*numnod,1)];
+
+%% Initialize number of virtual nodes
+nb_virt_nod = 0;
+nodepartochild = cell(numnod, 1);
+
+%% Allocate memory in blocks
+block_size = floor(2*numele);
+alloc_size = block_size;
+valloc_size = block_size;
+
+%% Structure ELEM
+% ELEM(i).nodes:    modified connectivity of element i
+% ELEM(i).domain:   index of the domain to which element i belongs
+% ELEM(i).volume:   computational volume of element i
+% ELEM(i).siblings: other partial element(s) from the same parent
+% ELEM(i).normals:  normal(s) of embedded interface(s) if any
+% ELEM(i).vertices: list of global vertex indices in element i
+% ELEM(i).stab:     (list of) stabilization parameter for Nitsche's method
+% ELEM(i).localVV:  list of vital vertices whose support are defined over elem i
+% ELEM(i).activEP:  list of nodes of elem i which are active end-points
+ELEM(alloc_size) = struct('nodes', [],'domain', [],'volume', [],'siblings',...
+    [], 'normals', [], 'vertices', [], 'stab', [], 'localVV', [], 'activEP', []);
+
+%% Structure VERT
+% VERT(i).X:     x-coordinate of vertex i
+% VERT(i).Y:     y-coordinate of vertex i
+% VERT(i).vital: bool to indicate if vertex i is vital
+VERT(valloc_size) = struct('X', [], 'Y', [], 'vital', []);
+
+csize = 0;
+vsize = 0;
+%% The first two values are the nodal id of the edge end-points: cut_edge_conn(1:2,:)
+%% The next two values are the x- and y-coordinates of the intersection point on the edges
+cut_edge_conn = zeros(4,3*numele);
+n_cut_ele = 0;
+n_cut_edge = 0;
+
+for ie=1:numele
+%     if(ie==26)
+%         display(ie);
+%     end
+    
+    [locGrn] = intersection_test_voro(nodeToGrain,VOR_VERT,VOR_SEG,x,y,node,ie);
+    if(length(locGrn)>3)
+        xc=sum(x(node(1:3,ie)))/3;
+        yc=sum(y(node(1:3,ie)))/3;
+        if(length(locGrn)==4)
+            fprintf('More than 3 grains in element %d with centroid {%f, %f}\n',ie,xc,yc);
+        else
+            err = MException('GrainChk:tooMany',...
+                'More than 4 grains in element %d with centroid {%f,%f}',e,xc,yc);
+            throw(err);
+        end
+    end
+    if(length(locGrn)>1)
+        
+        n_cut_ele = n_cut_ele+1;
+        
+        % Create a map between parent and child nodes
+        for i=1:nlink
+            %% Rmk: numchild should not be the total number of children of
+            %%      the considered node but the number of children which
+            %%      belong to one of the grain local to elem ie (i.e. in locGrn)
+            numChild=0;
+            for ichild=1:length(nodepartochild{node(i,ie)})
+                if(~isempty(find(nodeToGrain(nodepartochild{node(i,ie)}(ichild))==locGrn, 1)))
+                    numChild = numChild+1;
+                end
+            end
+            if(numChild<length(locGrn))
+                nbPass=length(locGrn)-(numChild+1);
+                existLocGrn = nodeToGrain([node(i,ie) nodepartochild{node(i,ie)}]);
+                missLocGrn = zeros(nbPass,1);
+                missLGcount = 1;
+                for lg=1:length(locGrn)
+                    if(isempty(find(locGrn(lg)==existLocGrn, 1)))
+                        missLocGrn(missLGcount) = locGrn(lg);
+                        missLGcount = missLGcount + 1;
+                    end
+                end
+                missLocGrn = sort(missLocGrn);
+                for ip=1:nbPass
+                    nb_virt_nod = nb_virt_nod + 1;
+                    child = numnod + nb_virt_nod;
+                    nodeToGrain(child) = missLocGrn(ip);
+                    nodepartochild{node(i,ie)} = [nodepartochild{node(i,ie)} child];
+                end
+            end
+        end
+        
+        % Create an element connectivity for cut elements
+        for i=1:nlink
+            %% elem domain
+            if(i==1)
+                for ilocGrn=1:length(locGrn)
+                    ELEM(csize+ilocGrn).domain = locGrn(ilocGrn);
+                end
+            end
+            %% parent node
+            elmNum = find(nodeToGrain(node(i,ie))==locGrn,1);
+            if(~isempty(elmNum))
+                ELEM(csize+elmNum).nodes = [node(i,ie) ELEM(csize+elmNum).nodes];
+            end
+            %% child node
+            for ic=1:length(nodepartochild{node(i,ie)})
+                elmNum = find(nodeToGrain(nodepartochild{node(i,ie)}(ic))==locGrn,1);
+                if(~isempty(elmNum))
+                    ELEM(csize+elmNum).nodes = [nodepartochild{node(i,ie)}(ic)...
+                        ELEM(csize+elmNum).nodes];
+                end
+            end
+        end
+        
+        %%%%% Get vertices, normals and relationship between siblings
+        [xint,yint,~,edge_id,intToGrn] = intersection_points_voro(node,x,y,VOR_SEG,locGrn,ie);
+        [VERT,ELEM,cut_edge_conn,vsize,n_cut_edge] = get_vertices_voro(VERT,ELEM,ie,vsize,csize,...
+            node,cut_edge_conn,edge_id,xint,yint,n_cut_edge,locGrn,intToGrn);
+        
+        %%%%% Get volume and stabilization parameter
+        %%%%% volume seems okay, revisit normals and stabilization parameter
+        [ELEM] = sub_grn_areas_normals(ELEM,VERT,csize,locGrn,x,y,ie,PARAMS.nlink,node);
+        [ELEM] = get_elem_stab(ELEM,VERT,csize,locGrn);
+        
+        csize=csize+length(locGrn);
+        
+    else
+        ELEM(csize+1).nodes=node(:,ie)';
+        ELEM(csize+1).domain = nodeToGrain(node(1,ie),1);
+        ELEM(csize+1).volume = polyarea(x(node(1:nlink,ie)), y(node(1:nlink,ie)));
+        csize=csize+1;
+    end
+    
+    %% Memory allocation for ELEM & VERT
+    if(csize + 0.1*alloc_size>alloc_size)
+        alloc_size = alloc_size + block_size;
+        ELEM(alloc_size) = struct('nodes', [], 'domain', [], 'volume', [],...
+            'siblings', [], 'normals', [], 'vertices', [], 'stab', [], 'localVV', [], 'activEP', []);
+    end
+    if(vsize + 0.1*valloc_size>valloc_size)
+        valloc_size = valloc_size + block_size;
+        VERT(valloc_size) = struct('X', [], 'Y', [], 'vital', []);
+    end
+    if(1.1*(numnod+nb_virt_nod)>length(nodeToGrain))
+        nodeToGrain = [nodeToGrain; zeros(numnod,1)];
+    end
+end
+nodeToGrain((numnod+nb_virt_nod+1):end) = [];
+% The following line should be uncommented for vital vertiex detedtion...
+% cut_edge_conn(:,(n_cut_edge+1):end) = [];
+ELEM(csize+1:end) = [];
+VERT(vsize+1:end) = [];
+
+num_tot_nod = numnod + nb_virt_nod;
+%% Structure NODE
+% NODE(i).X:          x-coordinate of node i
+% NODE(i).Y:          y-coordinate of node i
+% NODE(i).domain:     index of the domain to which node i belongs
+% NODE(i).ls:         value of the level-set
+% NODE(i).childrenId: index of the chid(ren) of node i
+% NODE(i).endPt:      bool to indicate whether node i is an end-point
+% NODE(i).vvId:       list of vital vertices connected to end-point i
+NODE(num_tot_nod) = struct('X', [], 'Y', [], 'domain', [], 'ls', [], 'childrenId',...
+    [], 'endPt', [], 'vvId', []);
+
+for inod=1:numnod
+    % Get x-, y-coordinates and domain index for former bg nodes
+    NODE(inod).X = x(inod); NODE(inod).Y = y(inod);
+    NODE(inod).domain = nodeToGrain(inod);
+    
+    % Get x-, y-coordinates for newly created nodes
+    if(~isempty(nodepartochild{inod}))
+        for ii=1:length(nodepartochild{inod})
+            NODE(inod).childrenId(ii) = nodepartochild{inod}(ii);
+            NODE(nodepartochild{inod}(ii)).X = x(inod); NODE(nodepartochild{inod}(ii)).Y = y(inod);
+            NODE(nodepartochild{inod}(ii)).domain = nodeToGrain(nodepartochild{inod}(ii));
+        end
+    end
+end
+% % Get domain index for newly created nodes
+% for ielm=1:length(ELEM)
+%     for inod=1:nlink
+% 	if(isempty(NODE(ELEM(ielm).nodes(inod)).domain))
+% 	    NODE(ELEM(ielm).nodes(inod)).domain = ELEM(ielm).domain;
+%         elseif(NODE(ELEM(ielm).nodes(inod)).domain ~= ELEM(ielm).domain)
+% 	    fprintf('** WARNING ** node %d does not belong to the same domain',ELEM(ielm).nodes(inod));
+% 	    fprintf(' as the element %d to which it belongs\n',ielm);
+% 	    fprintf(' => Its domain variable has been reset accordingly.\n');
+%             NODE(ELEM(ielm).nodes(inod)).domain = ELEM(ielm).domain;
+%         end
+%     end
+% end
+
+% triplot(node', x, y);
+% hold on;
+% plot ( [VERT(1).X VERT(4).X VERT(2).X VERT(5).X], [VERT(1).Y VERT(4).Y VERT(2).Y VERT(5).Y], '-', 'LineWidth', 4, 'Color', 'g' );
+% plot ( [VERT(4).X VERT(3).X], [VERT(4).Y VERT(3).Y], '-', 'LineWidth', 4, 'Color', 'g' );
+% axis([min(x),max(x),min(y),max(y)]);
